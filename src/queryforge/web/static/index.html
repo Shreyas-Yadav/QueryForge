@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>QueryForge</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #e6e9ef;
+    --muted: #9aa4b2; --accent: #6aa9ff; --error: #ff7a7a; --ok: #5fd08a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: .3px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px; }
+  form { display: flex; gap: 10px; }
+  input[type=text] {
+    flex: 1; padding: 12px 14px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; font-size: 15px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button {
+    padding: 12px 18px; background: var(--accent); color: #08203f; border: 0;
+    border-radius: 10px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .examples { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+  .examples a { color: var(--accent); cursor: pointer; text-decoration: none; margin-right: 14px; }
+  section { margin-top: 22px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  #activity .line { font-family: var(--mono); font-size: 13px; color: var(--muted); padding: 2px 0; }
+  #activity .line.thinking { color: #b79bff; }
+  #activity .line.tool { color: var(--accent); }
+  #activity .line.err { color: var(--error); }
+  pre.sql { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; margin: 0; color: #d7e3ff; }
+  .answer { font-size: 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #1d212b; position: sticky; top: 0; }
+  .tablewrap { overflow: auto; max-height: 440px; border-radius: 10px; }
+  .badge { display: inline-block; font-size: 12px; color: var(--muted); margin-left: 8px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>QueryForge</h1>
+  <p>Ask a question in plain English — it queries your Oracle database (read-only) and shows the result.</p>
+</header>
+<main>
+  <form id="form">
+    <input id="q" type="text" placeholder="e.g. How many orders were placed last month?" autocomplete="off" />
+    <button id="ask" type="submit">Ask</button>
+  </form>
+  <div class="examples">
+    Try:
+    <a data-q="List all tables and what they contain.">list tables</a>
+    <a data-q="How many rows are in each table?">row counts</a>
+  </div>
+
+  <section id="answer-sec" class="hidden">
+    <h2>Answer</h2>
+    <div class="panel answer" id="answer"></div>
+  </section>
+
+  <section id="sql-sec" class="hidden">
+    <h2>Generated SQL</h2>
+    <div class="panel"><pre class="sql" id="sql"></pre></div>
+  </section>
+
+  <section id="result-sec" class="hidden">
+    <h2>Results <span class="badge" id="result-meta"></span></h2>
+    <div class="tablewrap panel" style="padding:0"><table id="result"></table></div>
+  </section>
+
+  <section id="activity-sec">
+    <h2>Activity</h2>
+    <div class="panel" id="activity"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const form = $("form"), qInput = $("q"), askBtn = $("ask");
+
+document.querySelectorAll(".examples a").forEach(a =>
+  a.addEventListener("click", () => { qInput.value = a.dataset.q; qInput.focus(); }));
+
+function logLine(text, cls = "") {
+  const el = document.createElement("div");
+  el.className = "line " + cls;
+  el.textContent = text;
+  $("activity").appendChild(el);
+  $("activity").scrollTop = $("activity").scrollHeight;
+}
+
+function renderTable(columns, rows) {
+  const t = $("result");
+  t.innerHTML = "";
+  const thead = t.createTHead().insertRow();
+  columns.forEach(c => { const th = document.createElement("th"); th.textContent = c; thead.appendChild(th); });
+  const tbody = t.createTBody();
+  rows.forEach(r => {
+    const tr = tbody.insertRow();
+    r.forEach(v => { const td = tr.insertCell(); td.textContent = v === null ? "∅" : String(v); });
+  });
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case "status":        logLine(ev.message); break;
+    case "thinking":      logLine("thinking: " + ev.text.slice(0, 200), "thinking"); break;
+    case "assistant_text":logLine(ev.text); break;
+    case "tool_call":     logLine("→ " + ev.name + "(" + JSON.stringify(ev.input).slice(0, 160) + ")", "tool"); break;
+    case "sql":
+      $("sql").textContent = ev.sql;
+      $("sql-sec").classList.remove("hidden");
+      break;
+    case "result":
+      renderTable(ev.columns, ev.rows);
+      $("result-meta").textContent =
+        ev.row_count + " row" + (ev.row_count === 1 ? "" : "s") + (ev.truncated ? " (truncated)" : "");
+      $("result-sec").classList.remove("hidden");
+      break;
+    case "tool_error":    logLine("⚠ " + ev.name + ": " + ev.message, "err"); break;
+    case "answer":
+      $("answer").textContent = ev.text || "(no answer)";
+      $("answer-sec").classList.remove("hidden");
+      break;
+    case "error":         logLine("error: " + ev.message, "err"); break;
+  }
+}
+
+async function ask(question) {
+  // reset
+  ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
+  $("activity").innerHTML = "";
+  askBtn.disabled = true;
+
+  try {
+    const resp = await fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop();  // keep incomplete trailer
+      for (const part of parts) {
+        const line = part.split("\n").find(l => l.startsWith("data: "));
+        if (!line) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === "done") continue;
+        handleEvent(ev);
+      }
+    }
+  } catch (e) {
+    logLine("request failed: " + e, "err");
+  } finally {
+    askBtn.disabled = false;
+  }
+}
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = qInput.value.trim();
+  if (q) ask(q);
+});
+</script>
+</body>
+</html>

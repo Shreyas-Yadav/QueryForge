@@ -1,0 +1,42 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secrets & config — never commit
+.env
+.env.*
+!.env.example
+
+# Oracle wallet (mTLS) — never commit
+wallet/
+Wallet_*.zip
+*.zip
+*.pem
+*.p12
+*.jks
+cwallet.sso
+ewallet.*
+tnsnames.ora
+sqlnet.ora
+ojdbc.properties
+
+# Logs
+queryforge_audit.log
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

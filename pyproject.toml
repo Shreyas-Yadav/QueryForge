@@ -1,0 +1,31 @@
+[project]
+name = "queryforge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Shreyas Yadav", email = "shreyasyadav11@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic[vertex]>=0.113.0",
+    "fastapi>=0.138.2",
+    "google-genai>=2.10.0",
+    "oracledb>=4.0.1",
+    "pydantic-settings>=2.14.2",
+    "python-dotenv>=1.2.2",
+    "sqlglot>=30.12.0",
+    "uvicorn[standard]>=0.49.0",
+]
+
+[project.scripts]
+queryforge = "queryforge:main"
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
