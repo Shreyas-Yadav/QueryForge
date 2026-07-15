@@ -20,7 +20,7 @@ wheels/
 !.env.example
 
 # Oracle wallet (mTLS) — never commit
-wallet/
+Wallet*/
 Wallet_*.zip
 *.zip
 *.pem

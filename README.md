@@ -1,21 +1,56 @@
 # QueryForge
 
-Ask questions in plain English; QueryForge uses an LLM **on Google Vertex AI**
-(**Gemini** or **Claude**, switchable) to write **Oracle SQL**, runs it **read-only**
-against your Oracle Autonomous Database, and shows the result in a small web UI.
+Ask questions in plain English; QueryForge uses an LLM (**Gemini** or **Claude**,
+switchable) to write **Oracle SQL**, runs it **read-only** against your Oracle
+Autonomous Database, and shows the result in a small web UI.
 
 Set the model provider in `.env`:
 
 ```
-PROVIDER=gemini    # works on any Vertex project (default); GEMINI_MODEL=gemini-2.5-flash
-# PROVIDER=claude  # uses MODEL=claude-sonnet-4-6 — needs Claude Vertex quota provisioned
+PROVIDER=gemini    # default; GEMINI_MODEL=gemini-2.5-flash
+# PROVIDER=claude  # uses MODEL=claude-sonnet-4-6 — runs on Vertex (needs Claude quota)
 ```
+
+**Two ways to reach Gemini** (pick one):
+
+- **API key (easiest, no GCP).** Get a free key at
+  [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and set
+  `GEMINI_API_KEY` in `.env`. No gcloud, no Vertex, no ADC — works anywhere,
+  Windows included. See [Quick start (no GCP)](#quick-start-no-gcp).
+- **Vertex AI.** Leave `GEMINI_API_KEY` blank and authenticate with GCP ADC
+  (`gcloud auth application-default login`). `PROVIDER=claude` always uses Vertex.
+
+## Quick start (no GCP)
+
+For running on a machine with **no GCP project** (e.g. a teammate cloning the repo):
+
+1. **Clone + install:**
+   ```
+   git clone <repo-url> && cd QueryForge
+   uv sync
+   ```
+2. **Gemini API key:** copy `cp .env.example .env`, then set `PROVIDER=gemini` and
+   `GEMINI_API_KEY=<your free key from aistudio.google.com/apikey>`. Leave
+   `GCP_PROJECT_ID` blank.
+3. **Database:** get the wallet folder and the `ORACLE_*` values from whoever runs
+   the DB (sent out-of-band — never committed). Put the wallet somewhere and, in
+   `.env`, point `ORACLE_CONFIG_DIR` / `ORACLE_WALLET_LOCATION` at that folder and
+   fill in `ORACLE_USER` / `ORACLE_PASSWORD` / `ORACLE_DSN` /
+   `ORACLE_WALLET_PASSWORD` / `ORACLE_SCHEMA`.
+4. **Run:** `uv run uvicorn queryforge.web.app:app` → open http://127.0.0.1:8000.
+
+> **Windows:** no extra native setup — `oracledb` runs in thin mode (pure Python,
+> no Oracle Instant Client), and `uv` runs on Windows. Use your local wallet path
+> in `.env` (e.g. `C:\Users\you\wallet`).
 
 ## How it works
 
 A Claude tool-use agent is given three read-only tools — `list_tables`,
 `describe_table`, and `run_query`. It inspects the schema as needed, writes a SELECT,
 runs it, and self-corrects if the query errors. Progress streams to the browser over SSE.
+`list_tables` surfaces both base tables and synonyms (private plus business PUBLIC
+synonyms — Oracle's system synonyms are filtered out), and `describe_table` follows a
+synonym to its underlying table or view.
 
 **Safety is layered:**
 1. A **read-only Oracle user** (`GRANT SELECT` only) is the real boundary.
@@ -40,6 +75,9 @@ tests/             # sql_guard, agent (mocked), db helpers, web smoke tests
 ```
 
 ## Prerequisites (one-time)
+
+> Steps 1–2 (GCP/Vertex) are **only for the Vertex path**. If you're using a Gemini
+> API key ([Quick start](#quick-start-no-gcp)), skip them and start at step 3.
 
 1. **Vertex AI + Claude model**: in your GCP project, enable the Vertex AI API and enable
    your chosen Claude model (e.g. `claude-sonnet-4-6` or `claude-opus-4-8`) in
@@ -68,7 +106,8 @@ tests/             # sql_guard, agent (mocked), db helpers, web smoke tests
 
 ```
 cp .env.example .env
-# edit .env: GCP_PROJECT_ID, VERTEX_REGION, MODEL, and the ORACLE_* values
+# edit .env: either GEMINI_API_KEY (no GCP) or GCP_PROJECT_ID/VERTEX_REGION,
+# plus the ORACLE_* values
 ```
 
 > If your ADB uses **one-way TLS** instead of mTLS, leave `ORACLE_CONFIG_DIR` /

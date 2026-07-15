@@ -39,7 +39,21 @@ def _tools() -> list[types.Tool]:
 def run_agent(question: str) -> Iterator[dict[str, Any]]:
     """Drive the Gemini tool-calling loop, yielding the same events as the Claude agent."""
     cfg = get_settings()
-    client = genai.Client(vertexai=True, project=cfg.gcp_project_id, location=cfg.vertex_region)
+    if cfg.gemini_api_key:
+        # Google AI Studio (Developer API) — no GCP project / ADC needed.
+        client = genai.Client(api_key=cfg.gemini_api_key)
+    elif cfg.gcp_project_id:
+        # Vertex AI via Application Default Credentials.
+        client = genai.Client(
+            vertexai=True, project=cfg.gcp_project_id, location=cfg.vertex_region
+        )
+    else:
+        yield {
+            "type": "error",
+            "message": "No GEMINI_API_KEY set and no GCP_PROJECT_ID for Vertex. "
+            "Set one in .env.",
+        }
+        return
     config = types.GenerateContentConfig(
         system_instruction=system_prompt_text(),
         tools=_tools(),

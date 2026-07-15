@@ -113,8 +113,17 @@ def _to_jsonable(value: Any) -> Any:
 # --- Schema introspection (read-only) ----------------------------------------
 
 def list_tables() -> list[dict[str, Any]]:
-    """List the target schema's tables with any table-level comments."""
-    sql = """
+    """List queryable objects in the target schema: base tables plus synonyms.
+
+    Each item carries ``table_name`` (the name to query), ``comments``, and an
+    ``object_type`` of ``"TABLE"`` or ``"SYNONYM"``; synonyms also carry
+    ``points_to`` (``"OWNER.NAME"`` of the underlying object).
+
+    Synonyms include the target schema's private synonyms plus business PUBLIC
+    synonyms. Oracle-maintained system PUBLIC synonyms, DB-link synonyms, and
+    synonyms whose target no longer exists are filtered out.
+    """
+    tables_sql = """
         SELECT t.table_name, c.comments
         FROM all_tables t
         LEFT JOIN all_tab_comments c
@@ -122,15 +131,82 @@ def list_tables() -> list[dict[str, Any]]:
         WHERE t.owner = :owner
         ORDER BY t.table_name
     """
+    synonyms_sql = """
+        SELECT s.synonym_name, s.table_owner, s.table_name, c.comments
+        FROM all_synonyms s
+        LEFT JOIN all_users u
+               ON u.username = s.table_owner
+        LEFT JOIN all_tab_comments c
+               ON c.owner = s.table_owner AND c.table_name = s.table_name
+        WHERE s.db_link IS NULL
+          AND ( s.owner = :owner
+                OR (s.owner = 'PUBLIC' AND NVL(u.oracle_maintained, 'N') = 'N') )
+          AND EXISTS (
+                SELECT 1 FROM all_tables t
+                 WHERE t.owner = s.table_owner AND t.table_name = s.table_name
+                UNION ALL
+                SELECT 1 FROM all_views v
+                 WHERE v.owner = s.table_owner AND v.view_name = s.table_name )
+        ORDER BY s.synonym_name
+    """
+    owner = _schema_name()
     with _acquire() as conn, conn.cursor() as cur:
-        cur.execute(sql, owner=_schema_name())
-        return [{"table_name": name, "comments": comments} for name, comments in cur]
+        cur.execute(tables_sql, owner=owner)
+        tables = [{"table_name": name, "comments": comments} for name, comments in cur]
+
+        cur.execute(synonyms_sql, owner=owner)
+        synonyms = [
+            {
+                "synonym_name": syn_name,
+                "table_owner": tab_owner,
+                "table_name": tab_name,
+                "comments": comments,
+            }
+            for syn_name, tab_owner, tab_name, comments in cur
+        ]
+
+    return _merge_listing(tables, synonyms)
+
+
+def _merge_listing(
+    tables: list[dict[str, Any]], synonyms: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Combine base tables and synonyms into one tagged listing (pure helper).
+
+    Tables come first (tagged ``object_type="TABLE"``), then synonyms tagged
+    ``"SYNONYM"`` with a ``points_to`` target. A synonym whose name collides with
+    a base table is dropped — the real table shadows it at query-resolution time.
+    """
+    table_names = {t["table_name"] for t in tables}
+    merged: list[dict[str, Any]] = [
+        {"table_name": t["table_name"], "comments": t["comments"], "object_type": "TABLE"}
+        for t in tables
+    ]
+    for s in synonyms:
+        if s["synonym_name"] in table_names:
+            continue
+        merged.append(
+            {
+                "table_name": s["synonym_name"],
+                "comments": s["comments"],
+                "object_type": "SYNONYM",
+                "points_to": f"{s['table_owner']}.{s['table_name']}",
+            }
+        )
+    return merged
 
 
 def describe_table(name: str) -> dict[str, Any]:
-    """Return columns (with comments), primary key, and foreign keys for a table."""
+    """Return columns (with comments), primary key, and foreign keys for a table.
+
+    Resolves synonyms: if ``name`` is not a table/view in the target schema, it is
+    looked up in ``ALL_SYNONYMS`` (private preferred over PUBLIC) and the
+    underlying object is introspected instead. The returned ``table_name`` stays
+    the name the caller passed (queryable via ``current_schema``); when a synonym
+    was followed, ``resolved_to`` names the underlying ``OWNER.NAME``.
+    """
     table = name.strip().upper()
-    owner = _schema_name()
+    schema = _schema_name()
 
     columns_sql = """
         SELECT col.column_name, col.data_type, col.data_length,
@@ -166,9 +242,16 @@ def describe_table(name: str) -> dict[str, Any]:
         ORDER BY cc.position
     """
 
-    with _acquire() as conn, conn.cursor() as cur:
+    synonym_sql = """
+        SELECT table_owner, table_name FROM all_synonyms
+        WHERE synonym_name = :name AND db_link IS NULL AND owner IN (:owner, 'PUBLIC')
+        ORDER BY CASE WHEN owner = :owner THEN 0 ELSE 1 END
+        FETCH FIRST 1 ROW ONLY
+    """
+
+    def _columns(cur, owner: str) -> list[dict[str, Any]]:
         cur.execute(columns_sql, owner=owner, tname=table)
-        columns = [
+        return [
             {
                 "name": cname,
                 "type": _format_type(dtype, dlen, dprec, dscale),
@@ -177,8 +260,25 @@ def describe_table(name: str) -> dict[str, Any]:
             }
             for cname, dtype, dlen, dprec, dscale, nullable, comment in cur
         ]
+
+    with _acquire() as conn, conn.cursor() as cur:
+        # Try the name as a table/view in the target schema first.
+        owner = schema
+        resolved_to: str | None = None
+        columns = _columns(cur, owner)
+
         if not columns:
-            raise ValueError(f"Table not found: {name}")
+            # Fall back to resolving a synonym to its underlying object.
+            cur.execute(synonym_sql, name=table, owner=schema)
+            row = cur.fetchone()
+            if row is not None:
+                owner, base_table = row
+                resolved_to = f"{owner}.{base_table}"
+                # The columns/PK/FK queries key on table_name, so re-target it.
+                table = base_table
+                columns = _columns(cur, owner)
+            if not columns:
+                raise ValueError(f"Table not found: {name}")
 
         cur.execute(pk_sql, owner=owner, tname=table)
         primary_key = [row[0] for row in cur]
@@ -189,12 +289,15 @@ def describe_table(name: str) -> dict[str, Any]:
             for col, ref_table, ref_col in cur
         ]
 
-    return {
-        "table_name": table,
+    result: dict[str, Any] = {
+        "table_name": name.strip().upper(),
         "columns": columns,
         "primary_key": primary_key,
         "foreign_keys": foreign_keys,
     }
+    if resolved_to is not None:
+        result["resolved_to"] = resolved_to
+    return result
 
 
 def _format_type(

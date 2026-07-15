@@ -23,10 +23,20 @@ class Settings(BaseSettings):
     )
 
     # --- Vertex AI (model provider) ---
-    gcp_project_id: str = Field(..., description="GCP project hosting Vertex AI.")
+    gcp_project_id: str | None = Field(
+        None,
+        description="GCP project hosting Vertex AI. Optional when GEMINI_API_KEY is "
+        "set (Gemini API-key mode needs no GCP project).",
+    )
     vertex_region: str = Field(
         "us-east5",
-        description="Vertex region, e.g. 'us-east5' or 'global'.",
+        description="Vertex region, e.g. 'us-east5' or 'global'. Only used on the "
+        "Vertex path (i.e. when GEMINI_API_KEY is empty).",
+    )
+    gemini_api_key: str | None = Field(
+        None,
+        description="Google AI Studio API key. If set, the Gemini provider uses the "
+        "Developer API (no GCP/Vertex/ADC needed). Otherwise it uses Vertex via ADC.",
     )
     provider: str = Field(
         "gemini",
@@ -39,8 +49,9 @@ class Settings(BaseSettings):
         "Used when provider='claude'.",
     )
     gemini_model: str = Field(
-        "gemini-2.5-flash",
-        description="Gemini model id on Vertex. Used when provider='gemini'.",
+        "gemini-3.1-flash-lite",
+        description="Gemini model id. Used when provider='gemini'. Defaults to the "
+        "rolling 'latest' alias so a fresh API key doesn't land on a retired model.",
     )
 
     # --- Oracle Autonomous Database (thin mode, mTLS wallet) ---

@@ -30,14 +30,19 @@ from .sql_guard import SqlGuardError
 logger = logging.getLogger("queryforge.audit")
 
 MAX_TURNS = 12
-PREVIEW_ROWS = 20  # rows of a result the *model* sees (UI gets the full capped set)
+# rows of a result the *model* sees (UI gets the full capped set)
+PREVIEW_ROWS = 20
 
 # Provider-neutral tool specs (name / description / JSON-schema). Each provider
 # converts these into its own tool format.
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "list_tables",
-        "description": "List the tables available in the database, with any table comments.",
+        "description": (
+            "List the objects available to query, with any comments. Each entry has an "
+            "'object_type' of 'TABLE' or 'SYNONYM'; synonyms also show 'points_to' (the "
+            "underlying OWNER.NAME). Query a synonym by its own name like any table."
+        ),
         "schema": {"type": "object", "properties": {}},
     },
     {
@@ -75,7 +80,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
 
 # Anthropic tool format (used by the Claude provider below).
 TOOLS: list[dict[str, Any]] = [
-    {"name": s["name"], "description": s["description"], "input_schema": s["schema"]}
+    {"name": s["name"], "description": s["description"],
+        "input_schema": s["schema"]}
     for s in TOOL_SPECS
 ]
 
@@ -93,7 +99,8 @@ def _schema_overview() -> str:
         logger.warning("Could not pre-load schema overview: %s", e)
         return ""
     lines = [
-        f"- {t['table_name']}" + (f" — {t['comments']}" if t.get("comments") else "")
+        f"- {t['table_name']}" +
+        (f" — {t['comments']}" if t.get("comments") else "")
         for t in tables
     ]
     return "\n".join(lines)
@@ -117,6 +124,24 @@ def system_prompt_text() -> str:
         "- Data-dictionary identifiers are uppercase; for case-insensitive text "
         "matching use `UPPER(col) LIKE UPPER('...')`.\n"
         "- Inspect unfamiliar tables with `describe_table` before writing SQL.\n"
+        "- Beyond the schema tables listed below, you may also query Oracle's dynamic "
+        "performance and data-dictionary views for questions about database performance, "
+        "load, or monitoring. Key ones: `V$SQLAREA`/`V$SQL`/`V$SQLSTATS` hold per-statement "
+        "stats (`ELAPSED_TIME`, `CPU_TIME`, `EXECUTIONS`, `BUFFER_GETS`, `DISK_READS`, "
+        "`SQL_ID`, `SQL_TEXT`; time columns are in MICROSECONDS), and `DBA_HIST_SQLSTAT` "
+        "holds AWR history. For active-session / wait analysis use ASH (Active Session "
+        "History): `V$ACTIVE_SESSION_HISTORY` (recent, ~last hour, one sample per active "
+        "session per second) and `DBA_HIST_ACTIVE_SESS_HISTORY` (AWR-persisted, 1-in-10 "
+        "samples). Key ASH columns: `SAMPLE_TIME`, `SESSION_ID`, `SQL_ID`, `EVENT`, "
+        "`WAIT_CLASS`, `SESSION_STATE` ('ON CPU' vs 'WAITING'), `BLOCKING_SESSION`; ASH is "
+        "sampled, so aggregate with COUNT(*) (each row ≈ one second of activity) rather "
+        "than reading individual rows. These views aren't in the table list — call "
+        "`describe_table` (e.g. `describe_table('V$SQLAREA')`) to see their columns. "
+        "Example — top 10 queries by execution time: `SELECT sql_id, executions, "
+        "elapsed_time, sql_text FROM v$sqlarea ORDER BY elapsed_time DESC FETCH FIRST 10 "
+        "ROWS ONLY`. Example — top wait events from ASH: `SELECT event, COUNT(*) AS samples "
+        "FROM v$active_session_history GROUP BY event ORDER BY samples DESC FETCH FIRST 10 "
+        "ROWS ONLY`.\n"
         "- Only SELECT statements are allowed; any write/DDL will be rejected.\n"
         "- `run_query` returns a preview; the user is shown the full (capped) result "
         "separately, so don't paginate. If a result is truncated, say so.\n"
@@ -185,7 +210,15 @@ def run_agent(question: str) -> Iterator[dict[str, Any]]:
       - ``{"type": "error", "message": str}``
     """
     cfg = get_settings()
-    client = AnthropicVertex(project_id=cfg.gcp_project_id, region=cfg.vertex_region)
+    if not cfg.gcp_project_id:
+        yield {
+            "type": "error",
+            "message": "PROVIDER=claude runs on Vertex and needs GCP_PROJECT_ID set "
+            "in .env (Claude is not available via a Gemini API key).",
+        }
+        return
+    client = AnthropicVertex(
+        project_id=cfg.gcp_project_id, region=cfg.vertex_region)
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
     yield {"type": "status", "message": "Thinking…"}
@@ -214,8 +247,10 @@ def run_agent(question: str) -> Iterator[dict[str, Any]]:
                 yield {"type": "assistant_text", "text": block.text}
 
         if response.stop_reason != "tool_use":
-            final = "".join(b.text for b in response.content if b.type == "text").strip()
-            logger.info("Q=%r answered (stop_reason=%s)", question, response.stop_reason)
+            final = "".join(
+                b.text for b in response.content if b.type == "text").strip()
+            logger.info("Q=%r answered (stop_reason=%s)",
+                        question, response.stop_reason)
             yield {"type": "answer", "text": final}
             return
 
@@ -227,7 +262,8 @@ def run_agent(question: str) -> Iterator[dict[str, Any]]:
             if block.name == "run_query":
                 yield {"type": "sql", "sql": block.input.get("sql", "")}
 
-            content, is_error, ui = _execute_tool(block.name, dict(block.input))
+            content, is_error, ui = _execute_tool(
+                block.name, dict(block.input))
             logger.info(
                 "Q=%r tool=%s input=%s error=%s", question, block.name, block.input, is_error
             )
