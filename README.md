@@ -68,10 +68,14 @@ src/queryforge/
   config.py        # env/.env settings (pydantic-settings)
   db.py            # python-oracledb thin-mode pool + read-only query helpers
   sql_guard.py     # read-only SQL validation + row cap
+  prompt.py        # system prompt + schema overview + perf-view (AWR/ASH) catalog
+  agent_core.py    # provider-neutral tool specs + tool execution
   agent.py         # Claude-on-Vertex tool-use loop (event generator)
+  agent_gemini.py  # Gemini tool-use loop — same events, google-genai SDK
+  runner.py        # picks the provider (PROVIDER env var) and dispatches
   web/app.py       # FastAPI: POST /query (SSE), GET /health, serves the UI
   web/static/index.html
-tests/             # sql_guard, agent (mocked), db helpers, web smoke tests
+tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web smoke tests
 ```
 
 ## Prerequisites (one-time)
@@ -117,11 +121,13 @@ cp .env.example .env
 ## Run
 
 ```
-uv run uvicorn queryforge.web.app:app --reload
+uv run queryforge                                    # console command
+uv run uvicorn queryforge.web.app:app --reload       # dev, with auto-reload
 ```
 
-Open http://127.0.0.1:8000 and ask a question. Check connectivity any time at
-http://127.0.0.1:8000/health.
+`queryforge` binds to localhost:8000 by default (override with `QUERYFORGE_HOST` /
+`QUERYFORGE_PORT`). Open http://127.0.0.1:8000 and ask a question. Check connectivity
+any time at http://127.0.0.1:8000/health.
 
 ## Test
 

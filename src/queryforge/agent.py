@@ -1,9 +1,13 @@
-"""The QueryForge agent: a Claude tool-use loop running on Google Vertex AI.
+"""The QueryForge agent on Claude: a tool-use loop running on Google Vertex AI.
 
 ``run_agent`` is a generator that yields structured events as the agent works,
 so the web layer can stream progress over SSE. The agent is given three
 read-only tools (``list_tables``, ``describe_table``, ``run_query``); it inspects
 the schema as needed, writes Oracle SQL, runs it, and self-corrects on errors.
+
+This module holds only the Claude/Anthropic-specific glue. The provider-neutral
+pieces live elsewhere: the tool contract and tool execution in
+:mod:`queryforge.agent_core`, and the system prompt in :mod:`queryforge.prompt`.
 
 Key design points (per the project plan):
 - Model context vs UI output are separated: ``run_query`` returns only a small
@@ -15,184 +19,27 @@ Key design points (per the project plan):
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterator
-from functools import lru_cache
 from typing import Any
 
 from anthropic import AnthropicVertex
 
-from . import db
+from .agent_core import MAX_TURNS, TOOL_SPECS, execute_tool
 from .config import get_settings
-from .sql_guard import SqlGuardError
+from .prompt import system_prompt_text
 
 logger = logging.getLogger("queryforge.audit")
 
-MAX_TURNS = 12
-# rows of a result the *model* sees (UI gets the full capped set)
-PREVIEW_ROWS = 20
-
-# Provider-neutral tool specs (name / description / JSON-schema). Each provider
-# converts these into its own tool format.
-TOOL_SPECS: list[dict[str, Any]] = [
-    {
-        "name": "list_tables",
-        "description": (
-            "List the objects available to query, with any comments. Each entry has an "
-            "'object_type' of 'TABLE' or 'SYNONYM'; synonyms also show 'points_to' (the "
-            "underlying OWNER.NAME). Query a synonym by its own name like any table."
-        ),
-        "schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "describe_table",
-        "description": (
-            "Get columns (name, type, nullability, comments), the primary key, and "
-            "foreign keys for one table. Call this before writing SQL against a table "
-            "you have not inspected."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Table name (case-insensitive)."}
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "run_query",
-        "description": (
-            "Execute a single read-only Oracle SELECT and return a preview of the rows. "
-            "Only SELECT is permitted; writes and DDL are rejected. Results are capped, "
-            "and the full capped result set is shown to the user automatically — you "
-            "receive only a preview, so do not attempt to paginate."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "A single Oracle SELECT statement."}
-            },
-            "required": ["sql"],
-        },
-    },
-]
-
-# Anthropic tool format (used by the Claude provider below).
+# Anthropic tool format, derived from the provider-neutral specs.
 TOOLS: list[dict[str, Any]] = [
-    {"name": s["name"], "description": s["description"],
-        "input_schema": s["schema"]}
+    {"name": s["name"], "description": s["description"], "input_schema": s["schema"]}
     for s in TOOL_SPECS
 ]
 
 
-@lru_cache(maxsize=1)
-def _schema_overview() -> str:
-    """A compact 'table — comment' listing embedded in the (cached) system prompt.
-
-    Best-effort: if the DB is unreachable at build time, return an empty string and
-    let the model discover the schema via the list_tables tool.
-    """
-    try:
-        tables = db.list_tables()
-    except Exception as e:  # noqa: BLE001 — degrade gracefully
-        logger.warning("Could not pre-load schema overview: %s", e)
-        return ""
-    lines = [
-        f"- {t['table_name']}" +
-        (f" — {t['comments']}" if t.get("comments") else "")
-        for t in tables
-    ]
-    return "\n".join(lines)
-
-
-def system_prompt_text() -> str:
-    """The provider-neutral system prompt, including a best-effort schema overview."""
-    overview = _schema_overview()
-    schema_section = (
-        f"\n\nTables in this schema:\n{overview}" if overview else
-        "\n\nThe schema overview was not preloaded — call `list_tables` to discover tables."
-    )
-    return (
-        "You are QueryForge, a careful data analyst with read-only access to an "
-        "Oracle database. Turn the user's natural-language question into Oracle SQL, "
-        "run it, and answer in plain language grounded in the actual results.\n\n"
-        "Rules:\n"
-        "- The database is ORACLE. Use Oracle SQL dialect: `FETCH FIRST n ROWS ONLY` "
-        "(never `LIMIT`), `NVL(x, y)`, `SYSDATE`/`CURRENT_DATE`, `||` for string "
-        "concatenation, and `DATE '2024-01-01'` for date literals.\n"
-        "- Data-dictionary identifiers are uppercase; for case-insensitive text "
-        "matching use `UPPER(col) LIKE UPPER('...')`.\n"
-        "- Inspect unfamiliar tables with `describe_table` before writing SQL.\n"
-        "- Beyond the schema tables listed below, you may also query Oracle's dynamic "
-        "performance and data-dictionary views for questions about database performance, "
-        "load, or monitoring. Key ones: `V$SQLAREA`/`V$SQL`/`V$SQLSTATS` hold per-statement "
-        "stats (`ELAPSED_TIME`, `CPU_TIME`, `EXECUTIONS`, `BUFFER_GETS`, `DISK_READS`, "
-        "`SQL_ID`, `SQL_TEXT`; time columns are in MICROSECONDS), and `DBA_HIST_SQLSTAT` "
-        "holds AWR history. For active-session / wait analysis use ASH (Active Session "
-        "History): `V$ACTIVE_SESSION_HISTORY` (recent, ~last hour, one sample per active "
-        "session per second) and `DBA_HIST_ACTIVE_SESS_HISTORY` (AWR-persisted, 1-in-10 "
-        "samples). Key ASH columns: `SAMPLE_TIME`, `SESSION_ID`, `SQL_ID`, `EVENT`, "
-        "`WAIT_CLASS`, `SESSION_STATE` ('ON CPU' vs 'WAITING'), `BLOCKING_SESSION`; ASH is "
-        "sampled, so aggregate with COUNT(*) (each row ≈ one second of activity) rather "
-        "than reading individual rows. These views aren't in the table list — call "
-        "`describe_table` (e.g. `describe_table('V$SQLAREA')`) to see their columns. "
-        "Example — top 10 queries by execution time: `SELECT sql_id, executions, "
-        "elapsed_time, sql_text FROM v$sqlarea ORDER BY elapsed_time DESC FETCH FIRST 10 "
-        "ROWS ONLY`. Example — top wait events from ASH: `SELECT event, COUNT(*) AS samples "
-        "FROM v$active_session_history GROUP BY event ORDER BY samples DESC FETCH FIRST 10 "
-        "ROWS ONLY`.\n"
-        "- Only SELECT statements are allowed; any write/DDL will be rejected.\n"
-        "- `run_query` returns a preview; the user is shown the full (capped) result "
-        "separately, so don't paginate. If a result is truncated, say so.\n"
-        "- If a query errors, read the error and fix the SQL.\n"
-        "- The result rows are ALREADY displayed to the user in a table. Do NOT "
-        "reproduce the rows, rebuild the table, or list per-row values in your answer. "
-        "Instead give a brief (1-3 sentence) natural-language summary: the headline "
-        "finding, totals, ranges, or anything notable. For a single aggregate value "
-        "(e.g. a COUNT) state that number; otherwise describe the result, don't dump it."
-        + schema_section
-    )
-
-
 def _system_blocks() -> list[dict[str, Any]]:
     return [{"type": "text", "text": system_prompt_text(), "cache_control": {"type": "ephemeral"}}]
-
-
-def _execute_tool(name: str, tool_input: dict[str, Any]) -> tuple[str, bool, dict[str, Any] | None]:
-    """Run a tool.
-
-    Returns ``(content_for_model, is_error, ui_payload)`` where ``ui_payload`` is a
-    full result dict to surface to the UI (only for ``run_query``), else None.
-    """
-    if name == "list_tables":
-        return json.dumps(db.list_tables(), default=str), False, None
-
-    if name == "describe_table":
-        try:
-            return json.dumps(db.describe_table(tool_input["name"]), default=str), False, None
-        except ValueError as e:
-            return str(e), True, None
-
-    if name == "run_query":
-        sql = tool_input.get("sql", "")
-        try:
-            result = db.run_select(sql)
-        except SqlGuardError as e:
-            return f"Query rejected by safety guard: {e}", True, None
-        except Exception as e:  # noqa: BLE001 — surface DB errors for self-correction
-            return f"Database error: {e}", True, None
-
-        preview = {
-            "columns": result["columns"],
-            "rows": result["rows"][:PREVIEW_ROWS],
-            "row_count": result["row_count"],
-            "preview_rows": min(PREVIEW_ROWS, result["row_count"]),
-            "truncated": result["truncated"],
-        }
-        return json.dumps(preview, default=str), False, result
-
-    return f"Unknown tool: {name}", True, None
 
 
 def run_agent(question: str) -> Iterator[dict[str, Any]]:
@@ -262,8 +109,7 @@ def run_agent(question: str) -> Iterator[dict[str, Any]]:
             if block.name == "run_query":
                 yield {"type": "sql", "sql": block.input.get("sql", "")}
 
-            content, is_error, ui = _execute_tool(
-                block.name, dict(block.input))
+            content, is_error, ui = execute_tool(block.name, dict(block.input))
             logger.info(
                 "Q=%r tool=%s input=%s error=%s", question, block.name, block.input, is_error
             )

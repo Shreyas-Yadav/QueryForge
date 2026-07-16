@@ -2,8 +2,9 @@
 
 Mirrors :func:`queryforge.agent.run_agent` — same yielded event shapes and the
 same read-only tools — but drives Google's ``google-genai`` SDK with its native
-function-calling format. Tool execution, the system prompt, and the model-preview
-vs full-result split are shared with the Claude path via :mod:`queryforge.agent`.
+function-calling format. The provider-neutral pieces are shared: tool execution
+and specs from :mod:`queryforge.agent_core`, the system prompt from
+:mod:`queryforge.prompt`.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from .agent import MAX_TURNS, TOOL_SPECS, _execute_tool, system_prompt_text
+from .agent_core import MAX_TURNS, TOOL_SPECS, execute_tool
 from .config import get_settings
+from .prompt import system_prompt_text
 
 logger = logging.getLogger("queryforge.audit")
 
@@ -99,7 +101,7 @@ def run_agent(question: str) -> Iterator[dict[str, Any]]:
             if fc.name == "run_query":
                 yield {"type": "sql", "sql": args.get("sql", "")}
 
-            content, is_error, ui = _execute_tool(fc.name, args)
+            content, is_error, ui = execute_tool(fc.name, args)
             logger.info("Q=%r tool=%s input=%s error=%s", question, fc.name, args, is_error)
 
             if ui is not None:

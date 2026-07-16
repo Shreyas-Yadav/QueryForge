@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from queryforge import agent
+from queryforge import agent, agent_core, prompt
 from queryforge.sql_guard import SqlGuardError
 
 
@@ -46,8 +46,8 @@ def _fake_settings(monkeypatch):
         ),
     )
     # Keep the schema overview empty/offline during tests.
-    agent._schema_overview.cache_clear()
-    monkeypatch.setattr(agent.db, "list_tables", lambda: [])
+    prompt._schema_overview.cache_clear()
+    monkeypatch.setattr(prompt.db, "list_tables", lambda: [])
 
 
 def _install_client(monkeypatch, responses):
@@ -77,7 +77,7 @@ def test_happy_path_runs_query_and_answers(monkeypatch):
     ]
     _install_client(monkeypatch, responses)
     monkeypatch.setattr(
-        agent.db,
+        agent_core.db,
         "run_select",
         lambda sql: {
             "columns": ["COUNT(*)"],
@@ -129,7 +129,7 @@ def test_self_corrects_after_guard_rejection(monkeypatch):
             raise SqlGuardError("Disallowed operation in query: DELETE.")
         return {"columns": ["C"], "rows": [[42]], "row_count": 1, "truncated": False, "sql": sql}
 
-    monkeypatch.setattr(agent.db, "run_select", fake_run_select)
+    monkeypatch.setattr(agent_core.db, "run_select", fake_run_select)
 
     events = list(agent.run_agent("delete then count"))
     types = [e["type"] for e in events]
