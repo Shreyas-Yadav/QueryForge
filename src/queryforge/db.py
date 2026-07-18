@@ -1,9 +1,19 @@
 """Oracle connectivity (python-oracledb, thin mode) and read-only query helpers.
 
-Thin mode needs no Oracle Instant Client. For an Autonomous Database using mTLS
-the PEM wallet (``ewallet.pem``) is used via ``config_dir`` + ``wallet_location``
-+ ``wallet_password``. If the ADB is configured for one-way TLS instead, leave the
-wallet settings blank and put the full connect descriptor in ``ORACLE_DSN``.
+Thin mode needs no Oracle Instant Client — the same pure-Python driver connects
+from Windows, Linux and macOS alike, so nothing here is OS-specific.
+
+Two targets are supported, selected by ``DB_TARGET`` and resolved into an
+:class:`~queryforge.config.OracleProfile` by the config layer:
+
+* ``cloud`` — Autonomous Database using an mTLS PEM wallet (``ewallet.pem``) via
+  ``config_dir`` + ``wallet_location`` + ``wallet_password``. If the ADB is
+  configured for one-way TLS instead, leave the wallet settings blank and put the
+  full connect descriptor in the DSN.
+* ``local`` — Oracle in Docker or installed on this machine, addressed by a plain
+  ``host:port/service`` DSN with no wallet.
+
+Both are the same engine, so everything below this point is target-agnostic.
 
 Every public function here is read-only. ``run_select`` additionally routes SQL
 through :mod:`queryforge.sql_guard` and enforces a row cap + per-query timeout.
@@ -14,13 +24,16 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import decimal
+import logging
 import threading
 from typing import Any
 
 import oracledb
 
-from .config import Settings, get_settings
+from .config import OracleProfile, Settings, get_settings
 from .sql_guard import apply_row_cap, validate_select
+
+logger = logging.getLogger(__name__)
 
 _pool: oracledb.ConnectionPool | None = None
 _pool_lock = threading.Lock()
@@ -37,39 +50,60 @@ def get_pool() -> oracledb.ConnectionPool:
     return _pool
 
 
-def _create_pool(cfg: Settings) -> oracledb.ConnectionPool:
+def _pool_kwargs(profile: OracleProfile) -> dict[str, Any]:
+    """Build ``create_pool`` arguments for one target's connection profile."""
     kwargs: dict[str, Any] = dict(
-        user=cfg.oracle_user,
-        password=cfg.oracle_password,
-        dsn=cfg.oracle_dsn,
+        user=profile.user,
+        password=profile.password,
+        dsn=profile.dsn,
         min=1,
         max=4,
         increment=1,
         homogeneous=True,
     )
-    if cfg.uses_wallet:
-        # mTLS: PEM wallet (thin mode).
+    if profile.uses_wallet:
+        # mTLS: PEM wallet (thin mode). A local target has no wallet, so it
+        # connects with the DSN alone.
         kwargs.update(
-            config_dir=cfg.oracle_config_dir,
-            wallet_location=cfg.oracle_wallet_location,
-            wallet_password=cfg.oracle_wallet_password,
+            config_dir=profile.config_dir,
+            wallet_location=profile.wallet_location,
+            wallet_password=profile.wallet_password,
         )
-    return oracledb.create_pool(**kwargs)
+    return kwargs
+
+
+def _create_pool(cfg: Settings) -> oracledb.ConnectionPool:
+    profile = cfg.db
+    logger.info(
+        "Connecting to Oracle [%s] user=%s dsn=%s", profile.target, profile.user, profile.dsn
+    )
+    return oracledb.create_pool(**_pool_kwargs(profile))
 
 
 def close_pool() -> None:
-    """Close the pool (call on application shutdown)."""
+    """Close the pool (on shutdown, or when switching database target).
+
+    ``force=True`` because a plain close raises if any connection is still
+    checked out — which is exactly the case when the user switches target while
+    a query is streaming. A deliberate switch should win over an in-flight query,
+    and ``_pool`` must be cleared either way so the next call rebuilds against
+    the new target.
+    """
     global _pool
     with _pool_lock:
         if _pool is not None:
-            _pool.close()
-            _pool = None
+            try:
+                _pool.close(force=True)
+            except Exception as e:  # noqa: BLE001 — never block a target switch
+                logger.warning("Error closing connection pool: %s", e)
+            finally:
+                _pool = None
 
 
 def _schema_name() -> str:
-    """The schema the agent reads — ORACLE_SCHEMA if set, else the connecting user."""
-    cfg = get_settings()
-    return (cfg.oracle_schema or cfg.oracle_user).upper()
+    """The schema the agent reads — the target's schema if set, else its user."""
+    profile = get_settings().db
+    return (profile.schema_name or profile.user).upper()
 
 
 def _acquire():  # type: ignore[no-untyped-def]

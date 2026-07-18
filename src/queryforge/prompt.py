@@ -36,6 +36,16 @@ def _schema_overview() -> str:
     return "\n".join(lines)
 
 
+def clear_schema_cache() -> None:
+    """Forget the cached schema overview.
+
+    Must be called whenever the agent is pointed at a different database —
+    otherwise the system prompt keeps advertising the previous database's tables
+    and the model writes SQL against objects that aren't there.
+    """
+    _schema_overview.cache_clear()
+
+
 def system_prompt_text() -> str:
     """The provider-neutral system prompt, including a best-effort schema overview."""
     overview = _schema_overview()
