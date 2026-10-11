@@ -206,5 +206,3 @@ runs only when `ORACLE_*` env vars are set.
 
 App-level auth / multi-user, write/DML support, cross-schema querying, and deployment —
 this runs locally for a single user.
-
-Parth Pawar
