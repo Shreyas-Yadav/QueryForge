@@ -7,6 +7,8 @@ is disturbed.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from queryforge import config
@@ -83,6 +85,7 @@ def test_commented_out_target_is_not_treated_as_the_assignment(tmp_path):
     assert path.read_text(encoding="utf-8") == "# DB_TARGET=local\nDB_TARGET=local\n"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits not supported on Windows")
 def test_file_permissions_are_preserved(env_file):
     env_file.chmod(0o600)
     config.set_db_target("local", env_path=env_file)
