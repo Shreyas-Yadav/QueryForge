@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from queryforge import db
+from queryforge import config, db, observability
 
 
 class FakeConn:
@@ -68,6 +68,18 @@ def fake_pools(monkeypatch) -> PoolFactory:
     monkeypatch.setattr(db, "_create_pool", factory)
     monkeypatch.setattr(db, "_connect", factory.connect)
     return factory
+
+
+@pytest.fixture(autouse=True)
+def _no_live_tracing(monkeypatch):
+    """A developer's .env may point at a running Phoenix; tests must never export
+    to it (any test that starts the app runs the lifespan's setup_tracing)."""
+    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", "")
+    monkeypatch.setenv("TRACE_HIDE_CONTENT", "false")
+    config.get_settings.cache_clear()
+    yield
+    observability.shutdown_tracing()
+    config.get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

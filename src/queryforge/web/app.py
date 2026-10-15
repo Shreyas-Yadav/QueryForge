@@ -43,9 +43,11 @@ audit = logging.getLogger("queryforge.audit")
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     observability.setup_tracing()
-    yield
-    db.close_pool()
-    observability.shutdown_tracing()
+    try:
+        yield
+        db.close_pool()
+    finally:
+        observability.shutdown_tracing()  # send queued spans even if cleanup failed
 
 
 app = FastAPI(title="QueryForge", lifespan=lifespan)

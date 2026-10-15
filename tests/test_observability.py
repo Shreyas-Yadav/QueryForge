@@ -40,15 +40,6 @@ def set_env(monkeypatch, **values: str) -> None:
     config.get_settings.cache_clear()
 
 
-@pytest.fixture(autouse=True)
-def _isolated_settings(monkeypatch):
-    """Never let a developer's .env turn on real exporting during tests."""
-    set_env(monkeypatch, PHOENIX_COLLECTOR_ENDPOINT="", TRACE_HIDE_CONTENT="false")
-    yield
-    observability.shutdown_tracing()
-    config.get_settings.cache_clear()
-
-
 def capture() -> InMemorySpanExporter:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -379,3 +370,117 @@ def test_setup_never_raises_even_if_shutdown_fails(monkeypatch):
     monkeypatch.setattr(observability, "_instrumentors", broken)
     assert observability.setup_tracing() is False
     observability.shutdown_tracing()  # must not raise either
+
+
+# --- deferred review minors --------------------------------------------------------------
+
+
+class _SpyProvider(TracerProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.was_shut_down = False
+
+    def shutdown(self) -> None:
+        self.was_shut_down = True
+        super().shutdown()
+
+
+class _FailingInstrumentor:
+    is_instrumented_by_opentelemetry = False
+
+    def instrument(self, **kwargs):
+        raise RuntimeError("instrument failed")
+
+
+def test_partial_setup_failure_shuts_the_provider_down(monkeypatch):
+    monkeypatch.setattr(observability, "_instrumentors", lambda: [_FailingInstrumentor()])
+    provider = _SpyProvider()
+
+    assert observability.setup_tracing(provider=provider) is False
+    assert provider.was_shut_down, "exporter thread leaked after a failed setup"
+
+
+def test_lifespan_flushes_traces_even_if_closing_the_pool_fails(monkeypatch):
+    import anyio
+
+    calls = []
+    monkeypatch.setattr(observability, "setup_tracing", lambda: calls.append("setup"))
+    monkeypatch.setattr(observability, "shutdown_tracing", lambda: calls.append("shutdown"))
+
+    def broken_close():
+        raise RuntimeError("pool close failed")
+
+    async def run_lifespan():
+        async with app.router.lifespan_context(app):
+            pass
+
+    with monkeypatch.context() as patch:  # scoped: shared teardown calls close_pool too
+        patch.setattr(db, "close_pool", broken_close)
+        with pytest.raises(RuntimeError, match="pool close failed"):
+            anyio.run(run_lifespan)
+    assert calls == ["setup", "shutdown"]
+
+
+def test_disconnect_after_the_answer_keeps_answered(spans, logged_in, fake_db, monkeypatch):
+    use_loop(monkeypatch)
+    gen = runner.run_agent(QUESTION)
+    for event in gen:
+        if event["type"] == "answer":
+            break
+
+    gen.close()  # client leaves before reading the trailing events
+
+    [agent] = by_kind(spans, "AGENT")
+    assert agent.attributes["queryforge.outcome"] == "answered"
+    assert agent.status.status_code != StatusCode.ERROR
+
+
+def test_exporter_retry_noise_is_filtered_but_real_warnings_are_kept(monkeypatch, caplog):
+    import logging
+
+    set_env(monkeypatch, PHOENIX_COLLECTOR_ENDPOINT="http://127.0.0.1:9")
+    exporter_logger = logging.getLogger(observability._EXPORTER_LOGGER)
+    level_before = exporter_logger.level
+    assert observability.setup_tracing() is True
+
+    with caplog.at_level(logging.WARNING, logger=observability._EXPORTER_LOGGER):
+        exporter_logger.warning("Transient error ConnectionError encountered while exporting span batch, retrying in 1s.")
+        exporter_logger.warning("Dropping span batch: export request exceeds max_request_size")
+    assert "Transient error" not in caplog.text
+    assert "Dropping span batch" in caplog.text
+
+    observability.shutdown_tracing()
+    assert exporter_logger.level == level_before
+    assert not exporter_logger.filters
+
+
+def _anthropic_client(reply_text: str):
+    import anthropic
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test",
+            "content": [{"type": "text", "text": reply_text}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        })
+
+    return anthropic.Anthropic(api_key="test", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+@pytest.mark.parametrize("hidden, expect_canary", [(False, True), (True, False)])
+def test_llm_span_content_follows_hide_setting(monkeypatch, hidden, expect_canary):
+    canary = "CANARY-7f3a"
+    set_env(monkeypatch, TRACE_HIDE_CONTENT=str(hidden).lower())
+    exporter = capture()
+
+    _anthropic_client(f"{canary} answer").messages.create(
+        model="claude-test", max_tokens=10, system=f"{canary} system",
+        messages=[{"role": "user", "content": f"{canary} question"}],
+    )
+
+    [llm] = by_kind(exporter, "LLM")
+    dumped = json.dumps(dict(llm.attributes), default=str)
+    assert (canary in dumped) is expect_canary
+    assert llm.attributes.get("llm.token_count.total") == 8

@@ -35,6 +35,15 @@ _EXPORTER_LOGGER = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
 
 ToolResult = tuple[str, bool, dict[str, Any] | None]
 
+class _DropRetryNoise(logging.Filter):
+    """Drop the exporter's per-retry "Transient error …" warnings while Phoenix is
+    down (one per second); keep everything else, e.g. "Dropping span batch"."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith("Transient error")
+
+
+_retry_noise = _DropRetryNoise()
 _provider: TracerProvider | None = None
 _tracer: trace.Tracer = trace.NoOpTracer()
 _hide_content = False
@@ -57,8 +66,7 @@ def _phoenix_provider(endpoint: str) -> TracerProvider:
         endpoint=endpoint.rstrip("/") + "/v1/traces", timeout=EXPORT_TIMEOUT_S
     )
     provider.add_span_processor(BatchSpanProcessor(exporter))
-    # One ERROR line per failed batch instead of a warning on every retry.
-    logging.getLogger(_EXPORTER_LOGGER).setLevel(logging.ERROR)
+    logging.getLogger(_EXPORTER_LOGGER).addFilter(_retry_noise)
     return provider
 
 
@@ -77,6 +85,8 @@ def setup_tracing(provider: TracerProvider | None = None) -> bool:
             if not cfg.phoenix_collector_endpoint:
                 return False
             provider = _phoenix_provider(cfg.phoenix_collector_endpoint)
+        # Owned from here on, so a failure below still shuts its exporter down.
+        _provider = provider
         _hide_content = cfg.trace_hide_content
 
         from openinference.instrumentation import TraceConfig
@@ -84,7 +94,6 @@ def setup_tracing(provider: TracerProvider | None = None) -> bool:
         config = TraceConfig(hide_inputs=_hide_content, hide_outputs=_hide_content)
         for instrumentor in _instrumentors():
             instrumentor.instrument(tracer_provider=provider, config=config)
-        _provider = provider
         _tracer = provider.get_tracer(__name__)
     except Exception as e:  # noqa: BLE001
         logger.warning("Tracing disabled: %s", e)
@@ -106,6 +115,7 @@ def shutdown_tracing() -> None:
     except Exception as e:  # noqa: BLE001 — setup_tracing promises never to raise
         logger.warning("Error shutting down tracing: %s", e)
     finally:
+        logging.getLogger(_EXPORTER_LOGGER).removeFilter(_retry_noise)
         _provider = None
         _tracer = trace.NoOpTracer()
 
@@ -145,8 +155,9 @@ def trace_agent_run(
 ) -> Iterator[dict[str, Any]]:
     """Wrap an agent's event stream in one AGENT span.
 
-    Starlette resumes the stream on whichever worker thread is free, and
-    OpenTelemetry's "current span" is per-thread. So the AGENT span is attached
+    Starlette resumes the stream on a worker thread with a fresh copy of the
+    request's context, and OpenTelemetry's "current span" lives in that context,
+    so it does not survive from one step to the next. The AGENT span is attached
     around each ``next()`` of the inner loop — never across a ``yield`` — and every
     LLM/TOOL span the loop creates during that step becomes its child, whatever
     thread the step ran on.
@@ -183,7 +194,8 @@ def trace_agent_run(
                 outcome = "gave_up" if detail.startswith(_GAVE_UP_PREFIX) else "error"
             yield event
     except GeneratorExit:
-        outcome, detail = "cancelled", "client disconnected"
+        if outcome != "answered":  # leaving after the answer arrived is still a success
+            outcome, detail = "cancelled", "client disconnected"
         raise
     except BaseException as e:
         outcome, detail = "error", str(e)

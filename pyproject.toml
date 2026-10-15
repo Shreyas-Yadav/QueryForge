@@ -8,12 +8,13 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic[vertex]>=0.113.0",
+    # Must stay on 0.x while openinference-instrumentation-anthropic is pinned <2.
+    "anthropic[vertex]>=0.113.0,<1",
     "fastapi>=0.138.2",
     "google-genai>=2.10.0",
     "openinference-instrumentation>=0.1.71",
     # 2.x+ only instruments anthropic>=1.0; this project is on anthropic 0.x.
-    "openinference-instrumentation-anthropic<2",
+    "openinference-instrumentation-anthropic>=1.1.2,<2",
     "openinference-instrumentation-google-genai>=1.4.13",
     "openinference-semantic-conventions>=0.1.41",
     "opentelemetry-exporter-otlp-proto-http>=1.45.1",

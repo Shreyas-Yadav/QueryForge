@@ -44,3 +44,20 @@ def test_index_script_is_valid_javascript(tmp_path):
     path.write_text(script, encoding="utf-8")
     result = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_starting_the_app_in_tests_never_exports_traces():
+    """A developer's .env may point at a live Phoenix; tests must not send to it."""
+    from queryforge import observability
+
+    with TestClient(app):
+        assert observability._provider is None
+
+
+def test_anthropic_instrumentor_matches_the_sdk_major_version():
+    """Instrumentor 1.x supports anthropic 0.x; 2.x+ needs anthropic 1.x. Upgrade together."""
+    from importlib.metadata import version
+
+    instrumentor_major = int(version("openinference-instrumentation-anthropic").split(".")[0])
+    sdk_major = int(version("anthropic").split(".")[0])
+    assert (instrumentor_major >= 2) == (sdk_major >= 1)

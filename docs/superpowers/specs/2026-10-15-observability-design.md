@@ -105,7 +105,7 @@ knows the model's price.
 ### Threading (the key correctness point)
 
 The agent is a generator that Starlette resumes on arbitrary worker threads, and
-OpenTelemetry's "current span" is per-thread context. `trace_agent_run` therefore
+OpenTelemetry's "current span" lives in a contextvars context that each resumed step gets a fresh copy of. `trace_agent_run` therefore
 does **not** keep the AGENT span current across `yield`s. Instead it drives the
 inner generator itself and wraps **each `next()`** in
 `trace.use_span(agent_span, end_on_exit=False)`. Every LLM and TOOL span created
