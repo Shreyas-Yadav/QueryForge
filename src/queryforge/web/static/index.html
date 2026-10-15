@@ -36,11 +36,24 @@
   #db-dot.bad { background: var(--error); box-shadow: 0 0 0 3px rgba(255,122,122,.15); }
   #db-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
   #db-label b { color: var(--text); font-weight: 600; }
-  #db-toggle {
+  #db-switch.hidden { display: none; }
+  #logout {
     padding: 6px 12px; font-size: 13px; border-radius: 8px;
     background: transparent; color: var(--accent); border: 1px solid var(--border);
   }
-  #db-toggle:hover:not(:disabled) { border-color: var(--accent); }
+  #logout:hover { border-color: var(--accent); }
+  /* Login card */
+  #login-sec { display: flex; justify-content: center; margin-top: 48px; }
+  #login-sec.hidden { display: none; }
+  .login { width: 100%; max-width: 420px; }
+  #login-form { flex-direction: column; gap: 14px; }
+  #login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  select, input[type=password] {
+    padding: 10px 12px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; font-size: 15px; outline: none;
+  }
+  select:focus, input[type=password]:focus { border-color: var(--accent); }
+  .login-error { color: var(--error); font-size: 13px; }
   main { max-width: 980px; margin: 0 auto; padding: 24px; }
   form { display: flex; gap: 10px; }
   input[type=text] {
@@ -78,13 +91,27 @@
     <h1>QueryForge</h1>
     <p>Ask a question in plain English — it queries your Oracle database (read-only) and shows the result.</p>
   </div>
-  <div id="db-switch">
+  <div id="db-switch" class="hidden">
     <span id="db-dot" title="checking…"></span>
-    <span id="db-label">Database: <b id="db-name">…</b></span>
-    <button id="db-toggle" type="button" disabled>Switch</button>
+    <span id="db-label"><b id="db-user">…</b> @ <b id="db-name">…</b></span>
+    <button id="logout" type="button">Log out</button>
   </div>
 </header>
 <main>
+  <section id="login-sec" class="hidden">
+    <div class="panel login">
+      <h2>Connect to a database</h2>
+      <form id="login-form">
+        <label>Database <select id="login-db"></select></label>
+        <label>User <select id="login-user"></select></label>
+        <label>Password <input id="login-pw" type="password" autocomplete="current-password" /></label>
+        <div id="login-error" class="login-error hidden"></div>
+        <button id="login-btn" type="submit" disabled>Connect</button>
+      </form>
+    </div>
+  </section>
+
+  <div id="app" class="hidden">
   <form id="form">
     <input id="q" type="text" placeholder="e.g. How many orders were placed last month?" autocomplete="off" />
     <button id="ask" type="submit">Ask</button>
@@ -114,6 +141,7 @@
     <h2>Activity</h2>
     <div class="panel" id="activity"></div>
   </section>
+  </div>
 </main>
 
 <script>
@@ -123,52 +151,101 @@ const form = $("form"), qInput = $("q"), askBtn = $("ask");
 document.querySelectorAll(".examples a").forEach(a =>
   a.addEventListener("click", () => { qInput.value = a.dataset.q; qInput.focus(); }));
 
-// --- database target switch ---
-const dbDot = $("db-dot"), dbName = $("db-name"), dbToggle = $("db-toggle");
-let dbTargets = ["cloud", "local"];
+// --- login / session ---
+const dbDot = $("db-dot"), dbName = $("db-name"), dbUser = $("db-user");
+const loginDb = $("login-db"), loginUser = $("login-user"), loginPw = $("login-pw"),
+      loginBtn = $("login-btn"), loginError = $("login-error");
+let databases = [];
 
-function renderTarget(s) {
-  dbTargets = s.targets || dbTargets;
-  dbName.textContent = s.target;
-  dbDot.className = s.reachable ? "ok" : "bad";
-  dbDot.title = s.detail || "";
-  const other = dbTargets.find(t => t !== s.target);
-  dbToggle.textContent = other ? "Switch to " + other : "Switch";
-  dbToggle.disabled = !other;
+function showLoginError(msg) {
+  loginError.textContent = msg;
+  loginError.classList.toggle("hidden", !msg);
 }
 
-async function loadTarget() {
+function fillUsers() {
+  const entry = databases.find(d => d.name === loginDb.value);
+  loginUser.innerHTML = "";
+  (entry ? entry.users : []).forEach(u => loginUser.add(new Option(u, u)));
+}
+
+async function loadDatabases() {
+  showLoginError("");
+  loginDb.innerHTML = "";
+  loginBtn.disabled = true;
   try {
-    renderTarget(await (await fetch("/db-target")).json());
+    const resp = await fetch("/databases");
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.detail || "could not load databases");
+    databases = body.databases;
+    databases.forEach(d => loginDb.add(
+      new Option(d.name + " — " + d.host + ":" + d.port + "/" + d.service_name, d.name)));
+    fillUsers();
+    loginBtn.disabled = false;
   } catch (e) {
-    dbName.textContent = "unknown";
-    dbDot.className = "bad";
+    showLoginError(e.message);
   }
 }
 
-dbToggle.addEventListener("click", async () => {
-  const other = dbTargets.find(t => t !== dbName.textContent);
-  if (!other) return;
-  dbToggle.disabled = true;
-  dbToggle.textContent = "Switching…";
+function showLogin() {
+  $("app").classList.add("hidden");
+  $("db-switch").classList.add("hidden");
+  $("login-sec").classList.remove("hidden");
+  loadDatabases().then(() => loginPw.focus());
+}
+
+function showApp(s) {
+  $("login-sec").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("db-switch").classList.remove("hidden");
+  dbUser.textContent = s.user;
+  dbName.textContent = s.database;
+  dbDot.className = s.reachable ? "ok" : "bad";
+  dbDot.title = s.detail || "";
+  qInput.focus();
+}
+
+async function loadSession() {
   try {
-    const resp = await fetch("/db-target", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: other }),
+    const s = await (await fetch("/session")).json();
+    s.logged_in ? showApp(s) : showLogin();
+  } catch (e) {
+    showLogin();
+  }
+}
+
+loginDb.addEventListener("change", fillUsers);
+
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  showLoginError("");
+  loginBtn.disabled = true;
+  loginBtn.textContent = "Connecting…";
+  const body = JSON.stringify({ database: loginDb.value, user: loginUser.value, password: loginPw.value });
+  loginPw.value = "";  // never keep the password around, success or failure
+  try {
+    const resp = await fetch("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body,
     });
     const s = await resp.json();
-    if (!resp.ok) throw new Error(s.detail || "switch failed");
-    renderTarget(s);
-    logLine("database → " + s.target + (s.reachable ? "" : " (unreachable: " + s.detail + ")"),
-            s.reachable ? "tool" : "err");
-  } catch (e) {
-    logLine("could not switch database: " + e.message, "err");
-    await loadTarget();
+    if (!resp.ok) throw new Error(typeof s.detail === "string" ? s.detail : "login failed");
+    showApp(s);
+  } catch (err) {
+    showLoginError(err.message);
+    loginPw.focus();
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = "Connect";
   }
 });
 
-loadTarget();
+$("logout").addEventListener("click", async () => {
+  try { await fetch("/logout", { method: "POST" }); } catch (e) { /* show login regardless */ }
+  ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
+  $("activity").innerHTML = "";
+  showLogin();
+});
+
+loadSession();
 
 function logLine(text, cls = "") {
   const el = document.createElement("div");
@@ -227,6 +304,11 @@ async function ask(question) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
     });
+    if (resp.status === 401) {
+      showLogin();
+      showLoginError("Not connected — log in again.");
+      return;
+    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
