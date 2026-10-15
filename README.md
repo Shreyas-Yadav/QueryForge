@@ -2,7 +2,7 @@
 
 Ask questions in plain English; QueryForge uses an LLM (**Gemini** or **Claude**,
 switchable) to write **Oracle SQL**, runs it **read-only** against your Oracle
-database — cloud or local — and shows the result in a small web UI.
+database and shows the result in a small web UI.
 
 Set the model provider in `.env`:
 
@@ -11,18 +11,9 @@ PROVIDER=gemini    # default; GEMINI_MODEL=gemini-2.5-flash
 # PROVIDER=claude  # uses MODEL=claude-sonnet-4-6 — runs on Vertex (needs Claude quota)
 ```
 
-…and the database in the same file:
-
-```
-DB_TARGET=cloud    # Oracle Autonomous Database, over an mTLS wallet
-# DB_TARGET=local  # Oracle in Docker or installed on this machine
-```
-
-Both targets' credentials live in `.env` at once under `CLOUD_ORACLE_*` and
-`LOCAL_ORACLE_*` prefixes, so switching is one line — see
-[Local Oracle](#local-oracle). The web UI also has a **switch button** in the
-header that flips targets at runtime and writes the choice back to `.env`, with a
-green/red dot showing whether the active database is reachable.
+The database is chosen at runtime: QueryForge opens on a **login screen** where
+you pick a database and an Oracle user from `databases.json` and type the
+password. See [Connecting](#connecting).
 
 **Two ways to reach Gemini** (pick one):
 
@@ -45,15 +36,12 @@ For running on a machine with **no GCP project** (e.g. a teammate cloning the re
 2. **Gemini API key:** copy `cp .env.example .env`, then set `PROVIDER=gemini` and
    `GEMINI_API_KEY=<your free key from aistudio.google.com/apikey>`. Leave
    `GCP_PROJECT_ID` blank.
-3. **Database:** either point at the shared cloud DB (`DB_TARGET=cloud`) — get the
-   wallet folder and the `CLOUD_ORACLE_*` values from whoever runs it, sent
-   out-of-band, never committed — or run your own ([Local Oracle](#local-oracle))
-   and set `DB_TARGET=local`.
-4. **Run:** `uv run uvicorn queryforge.web.app:app` → open http://127.0.0.1:8000.
+3. **Database:** `cp databases.example.json databases.json` and edit it for your
+   database (see [Connecting](#connecting)).
+4. **Run:** `uv run uvicorn queryforge.web.app:app` → open http://127.0.0.1:8000 and log in.
 
 > **Windows:** no extra native setup — `oracledb` runs in thin mode (pure Python,
-> no Oracle Instant Client), and `uv` runs on Windows. Use your local wallet path
-> in `.env` (e.g. `C:\Users\you\wallet`).
+> no Oracle Instant Client), and `uv` runs on Windows.
 
 ## How it works
 
@@ -77,7 +65,9 @@ goes to the UI separately, so a broad query can't blow up context or cost.
 
 ```
 src/queryforge/
-  config.py        # env/.env settings (pydantic-settings) + cloud/local DB profiles
+  config.py        # env/.env settings (pydantic-settings)
+  connections.py   # databases.json loader (login-screen choices)
+  session.py       # the active login: pool + schema cache, swapped together
   db.py            # python-oracledb thin-mode pool + read-only query helpers
   sql_guard.py     # read-only SQL validation + row cap
   prompt.py        # system prompt + schema overview + perf-view (AWR/ASH) catalog
@@ -85,7 +75,7 @@ src/queryforge/
   agent.py         # Claude-on-Vertex tool-use loop (event generator)
   agent_gemini.py  # Gemini tool-use loop — same events, google-genai SDK
   runner.py        # picks the provider (PROVIDER env var) and dispatches
-  web/app.py       # FastAPI: POST /query (SSE), GET /health, serves the UI
+  web/app.py       # FastAPI: /login, /logout, /session, /databases, POST /query (SSE), /health
   web/static/index.html
 tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web smoke tests
 ```
@@ -102,9 +92,7 @@ tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web s
    ```
    gcloud auth application-default login
    ```
-3. **Oracle wallet**: download the ADB wallet (mTLS) and unzip it somewhere. Note the
-   directory (it contains `tnsnames.ora` and `ewallet.pem`) and a TNS alias (e.g. `mydb_low`).
-4. **Read-only DB user** — this is the actual security boundary. Run as **ADMIN**
+3. **Read-only DB user** — this is the actual security boundary. Run as **ADMIN**
    (a schema-owner account usually can't `CREATE USER`). Grant `SELECT` only on the
    tables the agent may read; never grant write/DDL:
    ```sql
@@ -114,16 +102,15 @@ tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web s
    GRANT SELECT ON SHREYAS.EMPLOYEE TO qf_readonly;
    -- (or build a read-only role and grant it)
    ```
-   Then in `.env` set `CLOUD_ORACLE_USER=qf_readonly`, its password, and
-   `CLOUD_ORACLE_SCHEMA=SHREYAS` so the agent reads/introspects the owner's schema.
-   The app sets `CURRENT_SCHEMA`, so questions still use unqualified table names.
+   Then add `qf_readonly` to that database's `users` in `databases.json` and set
+   `"schema": "SHREYAS"` so the agent reads the owner's schema. The app sets
+   `CURRENT_SCHEMA`, so questions still use unqualified table names.
    The same DDL applies to a local database — run it there too rather than
    pointing the agent at `SYSTEM`.
 
 ## Local Oracle
 
-Set `DB_TARGET=local` and fill in the `LOCAL_ORACLE_*` block. There is **no
-OS-specific code** in QueryForge: `oracledb` runs in thin mode everywhere, so
+There is **no OS-specific code** in QueryForge: `oracledb` runs in thin mode everywhere, so
 Windows, Linux and macOS all connect with the same pure-Python driver and the
 same DSN. The only difference is how you start the database.
 
@@ -140,17 +127,17 @@ docker run -d --name oracle-free -p 1521:1521 -e ORACLE_PASSWORD=oracle \
 docker logs -f oracle-free      # wait for "DATABASE IS READY TO USE!"
 ```
 
-```
-DB_TARGET=local
-LOCAL_ORACLE_USER=system
-LOCAL_ORACLE_PASSWORD=oracle
-LOCAL_ORACLE_DSN=localhost:1521/FREEPDB1
+Then add it to `databases.json` and log in as `system` with password `oracle`:
+
+```json
+[{ "name": "Oracle Free (Docker)", "host": "localhost", "port": 1521,
+   "service_name": "FREEPDB1", "users": ["system"] }]
 ```
 
 **Windows — native install:** run the Oracle Database 23ai Free installer (or XE
 21c). The service starts automatically; the pluggable database is `FREEPDB1` on
 23ai and `XEPDB1` on XE 21c, so use
-`LOCAL_ORACLE_DSN=localhost:1521/FREEPDB1` (or `.../XEPDB1`). Verify with:
+`"service_name": "FREEPDB1"` (or `"XEPDB1"`) in `databases.json`. Verify with:
 
 ```
 sqlplus system/<your-password>@localhost:1521/FREEPDB1
@@ -165,22 +152,38 @@ sudo systemctl start oracle-free-23ai
 sqlplus system/<your-password>@localhost:1521/FREEPDB1
 ```
 
-The DSN and `.env` block are the same as Docker's.
+The `databases.json` entry is the same as Docker's.
 
-## Configure
+## Connecting
 
 ```
-cp .env.example .env
-# edit .env: either GEMINI_API_KEY (no GCP) or GCP_PROJECT_ID/VERTEX_REGION,
-# then DB_TARGET plus that target's CLOUD_ORACLE_* / LOCAL_ORACLE_* values
+cp .env.example .env                       # model provider: GEMINI_API_KEY or GCP_PROJECT_ID
+cp databases.example.json databases.json   # the databases on the login screen
 ```
 
-> If your ADB uses **one-way TLS** instead of mTLS, leave `CLOUD_ORACLE_CONFIG_DIR` /
-> `CLOUD_ORACLE_WALLET_LOCATION` / `CLOUD_ORACLE_WALLET_PASSWORD` blank and put the
-> full connect descriptor in `CLOUD_ORACLE_DSN`.
+`databases.json` is a list; each entry is one database:
 
-> Unprefixed `ORACLE_*` variables still work as fallbacks for the cloud target, so
-> a `.env` written before `DB_TARGET` existed keeps connecting unchanged.
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Shown in the dropdown; must be unique |
+| `host` | yes | Listener host, e.g. `localhost` |
+| `port` | no | Listener port (default `1521`) |
+| `service_name` | yes | Oracle service, e.g. `AIWORLD` or `FREEPDB1` |
+| `schema` | no | Schema the agent reads (default: the logged-in user) |
+| `users` | yes | Oracle users offered for this database |
+
+A connect string such as
+`(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=localhost)(PORT=1539))(CONNECT_DATA=(SERVICE_NAME=AIWORLD)))`
+maps to `"host": "localhost", "port": 1539, "service_name": "AIWORLD"`.
+
+On the login screen pick the database and user and type the password. The
+password is held **only in memory** — never written to disk or logged — so you
+log in again after restarting the server. Edits to `databases.json` show up the
+next time the login screen loads.
+
+> **Keep the server on localhost.** There is one login for the whole process and
+> no cookies, so anyone who can reach the port uses your database session. Don't
+> run it with `--host 0.0.0.0`.
 
 ## Run
 
@@ -190,7 +193,7 @@ uv run uvicorn queryforge.web.app:app --reload       # dev, with auto-reload
 ```
 
 `queryforge` binds to localhost:8000 by default (override with `QUERYFORGE_HOST` /
-`QUERYFORGE_PORT`). Open http://127.0.0.1:8000 and ask a question. Check connectivity
+`QUERYFORGE_PORT`). Open http://127.0.0.1:8000, log in, and ask a question. Check connectivity
 any time at http://127.0.0.1:8000/health.
 
 ## Test
@@ -199,8 +202,9 @@ any time at http://127.0.0.1:8000/health.
 uv run pytest
 ```
 
-The agent and web tests mock Vertex/Oracle and run offline. The live `test_db` check
-runs only when `ORACLE_*` env vars are set.
+The agent and web tests mock Vertex/Oracle and run offline. The live `test_db` checks
+run only when `QF_LIVE_DATABASE` (an entry name in `databases.json`), `QF_LIVE_USER`
+and `QF_LIVE_PASSWORD` are set.
 
 ## Out of scope (v1)
 
