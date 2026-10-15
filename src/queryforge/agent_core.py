@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import db
+from . import db, observability
 from .sql_guard import SqlGuardError
 
 MAX_TURNS = 12
@@ -66,6 +66,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
 
 
 def execute_tool(name: str, tool_input: dict[str, Any]) -> tuple[str, bool, dict[str, Any] | None]:
+    """Run a tool inside a TOOL trace span. See :func:`_execute_tool` for the contract."""
+    return observability.trace_tool(name, tool_input, lambda: _execute_tool(name, tool_input))
+
+
+def _execute_tool(name: str, tool_input: dict[str, Any]) -> tuple[str, bool, dict[str, Any] | None]:
     """Run a tool.
 
     Returns ``(content_for_model, is_error, ui_payload)`` where ``ui_payload`` is a

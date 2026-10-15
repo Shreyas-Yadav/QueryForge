@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .. import connections, db, session
+from .. import connections, db, observability, session
 from ..runner import run_agent
 
 logging.basicConfig(
@@ -39,8 +39,10 @@ audit = logging.getLogger("queryforge.audit")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    observability.setup_tracing()
     yield
     db.close_pool()
+    observability.shutdown_tracing()
 
 
 app = FastAPI(title="QueryForge", lifespan=lifespan)

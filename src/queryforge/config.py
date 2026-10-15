@@ -85,6 +85,17 @@ class Settings(BaseSettings):
         "the login screen. Passwords are never stored here — they are typed at login.",
     )
 
+    # --- Observability (Arize Phoenix over OpenTelemetry) ---
+    phoenix_collector_endpoint: str | None = Field(
+        None,
+        description="Phoenix base URL, e.g. http://localhost:6006. Unset = tracing off.",
+    )
+    trace_hide_content: bool = Field(
+        False,
+        description="Record only structure, timings, tokens and errors — no prompts, "
+        "responses, or tool inputs/outputs.",
+    )
+
     # --- Query guardrails ---
     max_rows: int = Field(200, ge=1, description="Hard cap on rows returned per query.")
     query_timeout_s: int = Field(
