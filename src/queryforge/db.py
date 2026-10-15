@@ -3,17 +3,13 @@
 Thin mode needs no Oracle Instant Client — the same pure-Python driver connects
 from Windows, Linux and macOS alike, so nothing here is OS-specific.
 
-Two targets are supported, selected by ``DB_TARGET`` and resolved into an
-:class:`~queryforge.config.OracleProfile` by the config layer:
+There is no pool until the user logs in. :func:`replace_pool` connects with the
+profile built from their login, pings it, and only then makes it the active
+connection, so a failed login never disturbs a working one. Until then every
+database call raises :class:`NotLoggedIn`.
 
-* ``cloud`` — Autonomous Database using an mTLS PEM wallet (``ewallet.pem``) via
-  ``config_dir`` + ``wallet_location`` + ``wallet_password``. If the ADB is
-  configured for one-way TLS instead, leave the wallet settings blank and put the
-  full connect descriptor in the DSN.
-* ``local`` — Oracle in Docker or installed on this machine, addressed by a plain
-  ``host:port/service`` DSN with no wallet.
-
-Both are the same engine, so everything below this point is target-agnostic.
+Wallet (mTLS) parameters on the profile are still honoured, so cloud databases
+can be added back to ``databases.json`` later without touching this module.
 
 Every public function here is read-only. ``run_select`` additionally routes SQL
 through :mod:`queryforge.sql_guard` and enforces a row cap + per-query timeout.
@@ -30,28 +26,38 @@ from typing import Any
 
 import oracledb
 
-from .config import OracleProfile, Settings, get_settings
+from .config import OracleProfile, get_settings
 from .sql_guard import apply_row_cap, validate_select
 
 logger = logging.getLogger(__name__)
 
+class NotLoggedIn(RuntimeError):
+    """No database login is active — log in from the web UI first."""
+
+
 _pool: oracledb.ConnectionPool | None = None
+_profile: OracleProfile | None = None
 _pool_lock = threading.Lock()
 
 
 def get_pool() -> oracledb.ConnectionPool:
-    """Return a process-wide connection pool, creating it on first use."""
-    global _pool
-    if _pool is not None:
-        return _pool
-    with _pool_lock:
-        if _pool is None:
-            _pool = _create_pool(get_settings())
-    return _pool
+    """Return the active login's connection pool."""
+    pool = _pool
+    if pool is None:
+        raise NotLoggedIn("Not connected — log in to a database first.")
+    return pool
+
+
+def active_profile() -> OracleProfile:
+    """Return the profile of the active login."""
+    profile = _profile
+    if profile is None:
+        raise NotLoggedIn("Not connected — log in to a database first.")
+    return profile
 
 
 def _pool_kwargs(profile: OracleProfile) -> dict[str, Any]:
-    """Build ``create_pool`` arguments for one target's connection profile."""
+    """Build ``create_pool`` arguments for one connection profile."""
     kwargs: dict[str, Any] = dict(
         user=profile.user,
         password=profile.password,
@@ -62,8 +68,8 @@ def _pool_kwargs(profile: OracleProfile) -> dict[str, Any]:
         homogeneous=True,
     )
     if profile.uses_wallet:
-        # mTLS: PEM wallet (thin mode). A local target has no wallet, so it
-        # connects with the DSN alone.
+        # mTLS: PEM wallet (thin mode). Plain host/port/service entries have no
+        # wallet, so they connect with the DSN alone.
         kwargs.update(
             config_dir=profile.config_dir,
             wallet_location=profile.wallet_location,
@@ -72,37 +78,59 @@ def _pool_kwargs(profile: OracleProfile) -> dict[str, Any]:
     return kwargs
 
 
-def _create_pool(cfg: Settings) -> oracledb.ConnectionPool:
-    profile = cfg.db
-    logger.info(
-        "Connecting to Oracle [%s] user=%s dsn=%s", profile.target, profile.user, profile.dsn
-    )
+def _create_pool(profile: OracleProfile) -> oracledb.ConnectionPool:
     return oracledb.create_pool(**_pool_kwargs(profile))
 
 
-def close_pool() -> None:
-    """Close the pool (on shutdown, or when switching database target).
+def _close(pool: oracledb.ConnectionPool) -> None:
+    """Close a pool, logging rather than raising.
 
     ``force=True`` because a plain close raises if any connection is still
-    checked out — which is exactly the case when the user switches target while
-    a query is streaming. A deliberate switch should win over an in-flight query,
-    and ``_pool`` must be cleared either way so the next call rebuilds against
-    the new target.
+    checked out — which is exactly the case when the user logs out or switches
+    login while a query is streaming. The deliberate action should win.
     """
-    global _pool
+    try:
+        pool.close(force=True)
+    except Exception as e:  # noqa: BLE001 — never block a login change
+        logger.warning("Error closing connection pool: %s", e)
+
+
+def replace_pool(profile: OracleProfile) -> None:
+    """Connect as ``profile`` and make it the active login.
+
+    The new pool is built and pinged before anything is swapped, so a bad
+    password or an unreachable listener raises here and leaves the current login
+    exactly as it was.
+    """
+    global _pool, _profile
+    logger.info(
+        "Connecting to Oracle [%s] user=%s dsn=%s", profile.target, profile.user, profile.dsn
+    )
+    new_pool = _create_pool(profile)
+    try:
+        with new_pool.acquire() as conn:
+            conn.ping()
+    except BaseException:
+        _close(new_pool)
+        raise
     with _pool_lock:
-        if _pool is not None:
-            try:
-                _pool.close(force=True)
-            except Exception as e:  # noqa: BLE001 — never block a target switch
-                logger.warning("Error closing connection pool: %s", e)
-            finally:
-                _pool = None
+        old, _pool, _profile = _pool, new_pool, profile
+    if old is not None:
+        _close(old)
+
+
+def close_pool() -> None:
+    """Log out: close the active pool (if any) and forget its profile."""
+    global _pool, _profile
+    with _pool_lock:
+        old, _pool, _profile = _pool, None, None
+    if old is not None:
+        _close(old)
 
 
 def _schema_name() -> str:
-    """The schema the agent reads — the target's schema if set, else its user."""
-    profile = get_settings().db
+    """The schema the agent reads — the entry's schema if set, else the user."""
+    profile = active_profile()
     return (profile.schema_name or profile.user).upper()
 
 

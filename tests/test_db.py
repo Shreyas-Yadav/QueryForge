@@ -1,8 +1,7 @@
 """Tests for DB helpers.
 
-Pure helpers (value coercion, type formatting) and target selection run
-everywhere. Live-database checks are gated on Oracle credentials and skip
-otherwise.
+Pure helpers and login-state handling run everywhere. Live-database checks run
+only when ``QF_LIVE_DATABASE``, ``QF_LIVE_USER`` and ``QF_LIVE_PASSWORD`` are set.
 """
 
 from __future__ import annotations
@@ -11,29 +10,18 @@ import datetime as dt
 import decimal
 import os
 
+import oracledb
 import pytest
 
-from queryforge import db
-from queryforge.config import Settings
+from queryforge import connections, db
+from queryforge.config import OracleProfile, Settings
 
-CLOUD_ENV = {
-    "cloud_oracle_user": "qf_readonly",
-    "cloud_oracle_password": "cloud-pw",
-    "cloud_oracle_dsn": "mydb_low",
-    "cloud_oracle_config_dir": "/wallet",
-    "cloud_oracle_wallet_location": "/wallet",
-    "cloud_oracle_wallet_password": "pem-pw",
-}
-LOCAL_ENV = {
-    "local_oracle_user": "system",
-    "local_oracle_password": "oracle",
-    "local_oracle_dsn": "localhost:1521/FREEPDB1",
-}
-
-
-def make_settings(**overrides) -> Settings:
-    """Build Settings from explicit values only, ignoring any real .env file."""
-    return Settings(_env_file=None, **overrides)
+LOCAL = OracleProfile(
+    target="AIWORLD (local)",
+    user="shreyas",
+    password="s3cret-pw",
+    dsn="localhost:1539/AIWORLD",
+)
 
 
 def test_to_jsonable_scalars():
@@ -114,117 +102,123 @@ def test_merge_listing_table_shadows_synonym_of_same_name():
     assert merged[0]["comments"] == "real table"
 
 
-# --- target selection ---------------------------------------------------------
-
-
-def test_local_target_selects_local_profile_without_wallet():
-    profile = make_settings(db_target="local", **CLOUD_ENV, **LOCAL_ENV).db
-
-    assert profile.target == "local"
-    assert profile.user == "system"
-    assert profile.dsn == "localhost:1521/FREEPDB1"
-    assert profile.uses_wallet is False
-    # Cloud credentials sit alongside but must not leak into the local profile.
-    assert profile.wallet_location is None
-    assert profile.password == "oracle"
-
-
-def test_cloud_target_selects_cloud_profile_with_wallet():
-    profile = make_settings(db_target="cloud", **CLOUD_ENV, **LOCAL_ENV).db
-
-    assert profile.target == "cloud"
-    assert profile.user == "qf_readonly"
-    assert profile.dsn == "mydb_low"
-    assert profile.uses_wallet is True
-    assert profile.wallet_password == "pem-pw"
-
-
-def test_cloud_target_defaults_when_db_target_unset():
-    assert make_settings(**CLOUD_ENV).db.target == "cloud"
-
-
-def test_cloud_target_falls_back_to_legacy_oracle_vars():
-    """A .env written before DB_TARGET existed must keep working untouched."""
-    profile = make_settings(
-        oracle_user="legacy_user",
-        oracle_password="legacy-pw",
-        oracle_dsn="legacy_low",
-        oracle_schema="SHREYAS",
-        oracle_config_dir="/wallet",
-        oracle_wallet_location="/wallet",
-        oracle_wallet_password="pem-pw",
-    ).db
-
-    assert profile.user == "legacy_user"
-    assert profile.dsn == "legacy_low"
-    assert profile.schema_name == "SHREYAS"
-    assert profile.uses_wallet is True
-
-
-def test_prefixed_cloud_vars_win_over_legacy():
-    profile = make_settings(oracle_user="legacy_user", **CLOUD_ENV).db
-    assert profile.user == "qf_readonly"
-
-
-def test_missing_settings_for_active_target_name_the_variables():
-    with pytest.raises(ValueError) as exc:
-        make_settings(db_target="local", **CLOUD_ENV).db
-
-    message = str(exc.value)
-    assert "LOCAL_ORACLE_USER" in message
-    assert "LOCAL_ORACLE_PASSWORD" in message
-    assert "LOCAL_ORACLE_DSN" in message
-
-
-def test_unknown_target_rejected():
-    with pytest.raises(ValueError, match="Unknown DB_TARGET"):
-        make_settings(db_target="staging", **CLOUD_ENV).db
+# --- connection profile + login state -----------------------------------------
 
 
 def test_settings_load_without_any_oracle_config():
-    """Code paths that never connect must not require Oracle settings."""
-    cfg = make_settings()
-    assert cfg.max_rows == 200  # constructing Settings alone raises nothing
+    """Constructing Settings must not require any database configuration."""
+    assert Settings(_env_file=None).max_rows == 200
 
 
-def test_pool_kwargs_omit_wallet_for_local():
-    kwargs = db._pool_kwargs(make_settings(db_target="local", **LOCAL_ENV).db)
+def test_profile_repr_hides_password():
+    assert "s3cret-pw" not in repr(LOCAL)
+    assert "s3cret-pw" not in str(LOCAL)
 
-    assert kwargs["user"] == "system"
-    assert kwargs["dsn"] == "localhost:1521/FREEPDB1"
+
+def test_pool_kwargs_omit_wallet_without_wallet():
+    kwargs = db._pool_kwargs(LOCAL)
+
+    assert kwargs["user"] == "shreyas"
+    assert kwargs["dsn"] == "localhost:1539/AIWORLD"
     assert kwargs["homogeneous"] is True
     assert "wallet_location" not in kwargs
     assert "config_dir" not in kwargs
 
 
-def test_pool_kwargs_include_wallet_for_cloud():
-    kwargs = db._pool_kwargs(make_settings(db_target="cloud", **CLOUD_ENV).db)
+def test_pool_kwargs_include_wallet_when_configured():
+    profile = LOCAL.model_copy(
+        update={"config_dir": "/wallet", "wallet_location": "/wallet", "wallet_password": "pem-pw"}
+    )
+    kwargs = db._pool_kwargs(profile)
 
     assert kwargs["config_dir"] == "/wallet"
     assert kwargs["wallet_location"] == "/wallet"
     assert kwargs["wallet_password"] == "pem-pw"
 
 
-def test_schema_name_prefers_target_schema(monkeypatch):
-    cfg = make_settings(db_target="local", local_oracle_schema="APP", **LOCAL_ENV)
-    monkeypatch.setattr(db, "get_settings", lambda: cfg)
+def test_not_logged_in_by_default():
+    with pytest.raises(db.NotLoggedIn):
+        db.get_pool()
+    with pytest.raises(db.NotLoggedIn):
+        db.active_profile()
+    with pytest.raises(db.NotLoggedIn):
+        db.ping()
+
+
+def test_replace_pool_installs_profile_and_pool(fake_pools):
+    db.replace_pool(LOCAL)
+
+    assert db.active_profile() is LOCAL
+    assert db.get_pool() is fake_pools.created[0]
+
+
+def test_failed_ping_keeps_previous_login(fake_pools):
+    db.replace_pool(LOCAL)
+    fake_pools.next_error = oracledb.DatabaseError("ORA-01017: invalid username/password")
+    other = LOCAL.model_copy(update={"user": "qf_readonly"})
+
+    with pytest.raises(oracledb.DatabaseError):
+        db.replace_pool(other)
+
+    assert db.active_profile() is LOCAL
+    assert fake_pools.created[1].closed is True       # the failed pool is cleaned up
+    assert fake_pools.created[0].closed is False      # the working one is untouched
+
+
+def test_replace_pool_closes_the_old_pool(fake_pools):
+    db.replace_pool(LOCAL)
+    db.replace_pool(LOCAL.model_copy(update={"user": "qf_readonly"}))
+
+    assert fake_pools.created[0].closed is True
+    assert db.active_profile().user == "qf_readonly"
+
+
+def test_close_pool_logs_out(fake_pools):
+    db.replace_pool(LOCAL)
+    db.close_pool()
+
+    assert fake_pools.created[0].closed is True
+    with pytest.raises(db.NotLoggedIn):
+        db.active_profile()
+
+
+def test_schema_name_prefers_profile_schema(fake_pools):
+    db.replace_pool(LOCAL.model_copy(update={"schema_name": "app"}))
     assert db._schema_name() == "APP"
 
 
-def test_schema_name_falls_back_to_user(monkeypatch):
-    cfg = make_settings(db_target="local", **LOCAL_ENV)
-    monkeypatch.setattr(db, "get_settings", lambda: cfg)
-    assert db._schema_name() == "SYSTEM"
+def test_schema_name_falls_back_to_user(fake_pools):
+    db.replace_pool(LOCAL)
+    assert db._schema_name() == "SHREYAS"
 
 
 # --- live database ------------------------------------------------------------
 
-
-@pytest.mark.skipif(
-    not os.getenv("ORACLE_USER"),
-    reason="Live Oracle credentials not configured (set ORACLE_* in .env).",
+LIVE = {k: os.getenv(k) for k in ("QF_LIVE_DATABASE", "QF_LIVE_USER", "QF_LIVE_PASSWORD")}
+live = pytest.mark.skipif(
+    not all(LIVE.values()),
+    reason="Set QF_LIVE_DATABASE, QF_LIVE_USER and QF_LIVE_PASSWORD to run live checks.",
 )
-def test_live_list_tables():
+
+
+@pytest.fixture
+def live_login():
+    entry = connections.find(LIVE["QF_LIVE_DATABASE"])
+    db.replace_pool(
+        OracleProfile(
+            target=entry.name,
+            user=LIVE["QF_LIVE_USER"],
+            password=LIVE["QF_LIVE_PASSWORD"],
+            dsn=entry.dsn,
+            schema_name=entry.schema_name,
+        )
+    )
+    yield
+    db.close_pool()
+
+
+@live
+def test_live_list_tables(live_login):
     tables = db.list_tables()
     assert isinstance(tables, list)
     assert all(item["object_type"] in ("TABLE", "SYNONYM") for item in tables)
@@ -233,11 +227,8 @@ def test_live_list_tables():
     )
 
 
-@pytest.mark.skipif(
-    not os.getenv("ORACLE_USER"),
-    reason="Live Oracle credentials not configured (set ORACLE_* in .env).",
-)
-def test_live_describe_synonym_resolves():
+@live
+def test_live_describe_synonym_resolves(live_login):
     synonyms = [t for t in db.list_tables() if t["object_type"] == "SYNONYM"]
     if not synonyms:
         pytest.skip("No synonyms in the live schema to resolve.")
