@@ -68,6 +68,7 @@ src/queryforge/
   config.py        # env/.env settings (pydantic-settings)
   connections.py   # databases.json loader (login-screen choices)
   session.py       # the active login: pool + schema cache, swapped together
+  observability.py # OpenTelemetry tracing → Arize Phoenix
   db.py            # python-oracledb thin-mode pool + read-only query helpers
   sql_guard.py     # read-only SQL validation + row cap
   prompt.py        # system prompt + schema overview + perf-view (AWR/ASH) catalog
@@ -184,6 +185,30 @@ next time the login screen loads.
 > **Keep the server on localhost.** There is one login for the whole process and
 > no cookies, so anyone who can reach the port uses your database session. Don't
 > run it with `--host 0.0.0.0`.
+
+## Observability
+
+Every question can be recorded as a trace — the question, each model call (prompt,
+response, tokens, latency) and each tool call (SQL, result preview, errors) — and
+viewed in [Arize Phoenix](https://github.com/Arize-ai/phoenix), running locally.
+
+```
+docker run -d --name qf-phoenix -p 6006:6006 \
+  -e PHOENIX_WORKING_DIR=/mnt/data -v qf-phoenix-data:/mnt/data \
+  arizephoenix/phoenix:version-20.19.0
+```
+
+Then in `.env` set `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006`, restart
+QueryForge, ask a question, and open http://localhost:6006 → project
+**queryforge**. Each trace is one question: an `AGENT` span (user, database,
+outcome — `answered`, `gave_up`, `error` or `cancelled`) containing `LLM` and
+`TOOL` spans. Failed runs are red.
+
+- Tracing is off when `PHOENIX_COLLECTOR_ENDPOINT` is blank.
+- If Phoenix is down, questions are unaffected; spans are dropped.
+- `TRACE_HIDE_CONTENT=true` keeps structure, timings, tokens and errors but no
+  prompts, answers or query results.
+- Traces stay on your machine (in the `qf-phoenix-data` Docker volume).
 
 ## Run
 
