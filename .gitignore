@@ -18,6 +18,7 @@ wheels/
 .env
 .env.*
 !.env.example
+databases.json
 
 # Oracle wallet (mTLS) — never commit
 Wallet*/
@@ -31,6 +32,9 @@ ewallet.*
 tnsnames.ora
 sqlnet.ora
 ojdbc.properties
+
+# Plan-execution scratch (superpowers)
+.superpowers/
 
 # Logs
 queryforge_audit.log

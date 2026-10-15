@@ -1,0 +1,10 @@
+[
+  {
+    "name": "AIWORLD (local)",
+    "host": "localhost",
+    "port": 1539,
+    "service_name": "AIWORLD",
+    "schema": "SHREYAS",
+    "users": ["qf_readonly", "shreyas"]
+  }
+]

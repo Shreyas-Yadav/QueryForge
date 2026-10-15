@@ -141,6 +141,13 @@ class Settings(BaseSettings):
         description="Wallet PEM password (mTLS only; NOT the DB password).",
     )
 
+    # --- Databases offered on the login screen ---
+    databases_file: Path = Field(
+        Path("databases.json"),
+        description="JSON list of databases (host, port, service, users) shown on "
+        "the login screen. Passwords are never stored here — they are typed at login.",
+    )
+
     # --- Query guardrails ---
     max_rows: int = Field(200, ge=1, description="Hard cap on rows returned per query.")
     query_timeout_s: int = Field(
