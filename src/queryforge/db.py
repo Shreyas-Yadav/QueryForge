@@ -82,6 +82,14 @@ def _create_pool(profile: OracleProfile) -> oracledb.ConnectionPool:
     return oracledb.create_pool(**_pool_kwargs(profile))
 
 
+def _connect(profile: OracleProfile) -> oracledb.Connection:
+    """One standalone connection — exactly one login attempt."""
+    kwargs = _pool_kwargs(profile)
+    for pool_only in ("min", "max", "increment", "homogeneous"):
+        kwargs.pop(pool_only)
+    return oracledb.connect(**kwargs)
+
+
 def _close(pool: oracledb.ConnectionPool) -> None:
     """Close a pool, logging rather than raising.
 
@@ -98,21 +106,21 @@ def _close(pool: oracledb.ConnectionPool) -> None:
 def replace_pool(profile: OracleProfile) -> None:
     """Connect as ``profile`` and make it the active login.
 
-    The new pool is built and pinged before anything is swapped, so a bad
-    password or an unreachable listener raises here and leaves the current login
-    exactly as it was.
+    The credentials are checked with a single standalone connection before any
+    pool exists, so a bad password or an unreachable listener raises here and
+    leaves the current login exactly as it was. A pool is not used for that
+    check because it tries a bad password twice, and every try counts toward
+    the account's FAILED_LOGIN_ATTEMPTS lockout (verified on 19c). Once the
+    password is proven, Oracle has reset that counter, so the pool's own
+    connections are harmless.
     """
     global _pool, _profile
     logger.info(
         "Connecting to Oracle [%s] user=%s dsn=%s", profile.target, profile.user, profile.dsn
     )
+    with _connect(profile) as conn:
+        conn.ping()
     new_pool = _create_pool(profile)
-    try:
-        with new_pool.acquire() as conn:
-            conn.ping()
-    except BaseException:
-        _close(new_pool)
-        raise
     with _pool_lock:
         old, _pool, _profile = _pool, new_pool, profile
     if old is not None:

@@ -38,15 +38,26 @@ class FakePool:
 
 
 class PoolFactory:
-    """Stands in for ``db._create_pool``. Set ``next_error`` to fail the next ping."""
+    """Stands in for ``db._connect`` and ``db._create_pool``.
+
+    Set ``next_error`` to make the next login attempt fail. ``login_attempts``
+    counts how many times a password was tried against the "database".
+    """
 
     def __init__(self) -> None:
         self.created: list[FakePool] = []
         self.next_error: Exception | None = None
+        self.login_attempts = 0
+
+    def connect(self, profile) -> FakeConn:
+        self.login_attempts += 1
+        error, self.next_error = self.next_error, None
+        if error is not None:
+            raise error
+        return FakeConn(FakePool(profile))
 
     def __call__(self, profile) -> FakePool:
-        pool = FakePool(profile, ping_error=self.next_error)
-        self.next_error = None
+        pool = FakePool(profile)
         self.created.append(pool)
         return pool
 
@@ -55,6 +66,7 @@ class PoolFactory:
 def fake_pools(monkeypatch) -> PoolFactory:
     factory = PoolFactory()
     monkeypatch.setattr(db, "_create_pool", factory)
+    monkeypatch.setattr(db, "_connect", factory.connect)
     return factory
 
 

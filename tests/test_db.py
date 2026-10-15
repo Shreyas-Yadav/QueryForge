@@ -152,7 +152,7 @@ def test_replace_pool_installs_profile_and_pool(fake_pools):
     assert db.get_pool() is fake_pools.created[0]
 
 
-def test_failed_ping_keeps_previous_login(fake_pools):
+def test_failed_login_keeps_previous_login(fake_pools):
     db.replace_pool(LOCAL)
     fake_pools.next_error = oracledb.DatabaseError("ORA-01017: invalid username/password")
     other = LOCAL.model_copy(update={"user": "qf_readonly"})
@@ -161,8 +161,20 @@ def test_failed_ping_keeps_previous_login(fake_pools):
         db.replace_pool(other)
 
     assert db.active_profile() is LOCAL
-    assert fake_pools.created[1].closed is True       # the failed pool is cleaned up
+    assert len(fake_pools.created) == 1               # no pool built for the failed login
     assert fake_pools.created[0].closed is False      # the working one is untouched
+
+
+def test_failed_login_tries_the_password_once(fake_pools):
+    """A pool tries a bad password twice (seen on 19c: ORA-01017 counted +2),
+    which halves the attempts left before Oracle locks the account."""
+    fake_pools.next_error = oracledb.DatabaseError("ORA-01017: invalid username/password")
+
+    with pytest.raises(oracledb.DatabaseError):
+        db.replace_pool(LOCAL)
+
+    assert fake_pools.login_attempts == 1
+    assert fake_pools.created == []
 
 
 def test_replace_pool_closes_the_old_pool(fake_pools):

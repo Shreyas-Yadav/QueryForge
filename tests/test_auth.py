@@ -133,7 +133,7 @@ def test_invalid_credentials_returns_401(databases_file, fake_pools):
 
     assert r.status_code == 401
     assert r.json()["detail"] == "Invalid username or password"
-    assert fake_pools.created[0].closed is True
+    assert fake_pools.created == []
     assert client.get("/session").json()["logged_in"] is False
 
 
