@@ -97,16 +97,17 @@ def setup_tracing(provider: TracerProvider | None = None) -> bool:
 def shutdown_tracing() -> None:
     """Send queued spans, undo instrumentation, and return to the no-op tracer."""
     global _provider, _tracer
-    for instrumentor in _instrumentors():
-        if instrumentor.is_instrumented_by_opentelemetry:
-            instrumentor.uninstrument()
-    if _provider is not None:
-        try:
+    try:
+        for instrumentor in _instrumentors():
+            if instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.uninstrument()
+        if _provider is not None:
             _provider.shutdown()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Error shutting down tracing: %s", e)
-    _provider = None
-    _tracer = trace.NoOpTracer()
+    except Exception as e:  # noqa: BLE001 — setup_tracing promises never to raise
+        logger.warning("Error shutting down tracing: %s", e)
+    finally:
+        _provider = None
+        _tracer = trace.NoOpTracer()
 
 
 def _set_content(span: trace.Span, attribute: str, value: Any) -> None:

@@ -15,13 +15,16 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
+import anyio
 import oracledb
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
+from starlette.types import Send
 from pydantic import BaseModel, Field
 
 from .. import connections, db, observability, session
@@ -47,6 +50,27 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="QueryForge", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """A StreamingResponse that always closes its sync body generator.
+
+    When the client disconnects, Starlette abandons a sync body iterator instead of
+    closing it, and it is only finalised whenever the cycle garbage collector runs.
+    Until then the agent run — and its trace span — stay open. Closing it here, in
+    a shielded scope so cancellation can't skip it, ends the run immediately.
+    """
+
+    def __init__(self, content: Iterator[str], **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._source = content
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(self._source.close)
 
 
 class QueryIn(BaseModel):
@@ -165,13 +189,16 @@ def query(payload: QueryIn) -> StreamingResponse:
 
     def event_stream() -> Iterator[str]:
         try:
-            for event in run_agent(payload.question):
-                yield f"data: {json.dumps(event)}\n\n"
+            # closing(): when this stream is closed on disconnect, close the agent
+            # run too, rather than leaving it for the garbage collector.
+            with closing(run_agent(payload.question)) as events:
+                for event in events:
+                    yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # noqa: BLE001 — never break the SSE stream
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

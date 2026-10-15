@@ -326,3 +326,56 @@ def test_unreachable_phoenix_does_not_slow_questions(logged_in, fake_db, monkeyp
     start = time.perf_counter()
     observability.shutdown_tracing()
     assert time.perf_counter() - start < 5.0
+
+
+# --- review fixes ----------------------------------------------------------------------
+
+
+def test_client_disconnect_closes_the_run_without_gc(spans, logged_in, fake_db, monkeypatch):
+    """Starlette abandons a sync body iterator when the client goes away; without an
+    explicit close the AGENT span stays open until the cycle GC happens to run."""
+    import gc
+
+    import anyio
+
+    from queryforge.web import app as app_module
+
+    use_loop(monkeypatch)
+    response = app_module.query(app_module.QueryIn(question=QUESTION))
+    chunks: list[dict] = []
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            chunks.append(message)
+            if len(chunks) == 2:
+                raise OSError("client went away")
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    scope = {"type": "http", "asgi": {"spec_version": "2.4"}, "method": "POST",
+             "path": "/query", "headers": []}
+    async def serve_then_inspect():
+        # Inspect while the event loop is still alive, as on a real server —
+        # loop shutdown would close abandoned generators and hide the bug.
+        with pytest.raises(Exception):  # Starlette turns the OSError into ClientDisconnect
+            await response(scope, receive, send)
+        await anyio.sleep(0.05)
+        return by_kind(spans, "AGENT")
+
+    gc.disable()
+    try:
+        agents = anyio.run(serve_then_inspect)
+    finally:
+        gc.enable()
+    assert len(agents) == 1, "AGENT span was not ended on disconnect"
+    assert agents[0].attributes["queryforge.outcome"] == "cancelled"
+
+
+def test_setup_never_raises_even_if_shutdown_fails(monkeypatch):
+    def broken():
+        raise RuntimeError("instrumentor import blew up")
+
+    monkeypatch.setattr(observability, "_instrumentors", broken)
+    assert observability.setup_tracing() is False
+    observability.shutdown_tracing()  # must not raise either
