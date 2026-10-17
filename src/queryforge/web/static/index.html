@@ -83,14 +83,18 @@
   .bm:hover .x, .bm .x:focus { opacity: 1; }
   .bm .x:hover { background: var(--divider); color: var(--err); }
   .side .empty-note { color: var(--faint); font-size: 12.5px; padding: 12px 8px; }
-  .shell.collapsed { grid-template-columns: 52px minmax(0, 1fr); }
-  body.in-app.sb-collapsed .brandbox { width: 52px; justify-content: center; padding: 0; }
-  body.in-app.sb-collapsed .brand { display: none; }
-  .collapsed .side { padding: 10px 6px; }
-  .collapsed .search, .collapsed .bm .lbl, .collapsed .bm .x, .collapsed .grp span, .collapsed .empty-note { display: none; }
-  .collapsed .grp { height: 1px; background: var(--divider); padding: 0; margin: 8px 4px; font-size: 0; }
-  .collapsed .bm { justify-content: center; padding: 8px 0; }
-  .collapsed .bm .s { font-size: 14px; }
+  @media (min-width: 900px) {
+    .shell.collapsed { grid-template-columns: 52px minmax(0, 1fr); }
+    .collapsed .side { padding: 10px 6px; }
+    .collapsed .search, .collapsed .bm .lbl, .collapsed .bm .x, .collapsed .grp span, .collapsed .empty-note { display: none; }
+    .collapsed .grp { height: 1px; background: var(--divider); padding: 0; margin: 8px 4px; font-size: 0; }
+    .collapsed .bm { justify-content: center; padding: 8px 0; }
+    .collapsed .bm .s { font-size: 14px; }
+  }
+  @media (min-width: 1100px) {
+    body.in-app.sb-collapsed .brandbox { width: 52px; justify-content: center; padding: 0; }
+    body.in-app.sb-collapsed .brand { display: none; }
+  }
   /* Save popover */
   .ask .t { position: relative; }
   .pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 260px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -181,6 +185,58 @@
   #login-btn { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 4px; padding: 10px; font-weight: 600; font-size: 14px; }
   #login-btn:disabled { opacity: .6; cursor: default; }
 
+  .hdr-extras { display: flex; align-items: center; gap: 8px; }
+  /* Header menu (phones) */
+  #header-menu { display: none; }
+  .menu-session { display: none; }
+  .sidebar-backdrop { display: none; }
+
+  /* Responsive */
+  @media (max-width: 1099px) {
+    .brandbox { width: auto; padding-right: 16px; }
+  }
+  @media (min-width: 900px) and (max-width: 1099px) {
+    .shell { grid-template-columns: 52px minmax(0, 1fr); position: relative; }
+    .main { grid-column: 2; }
+    .shell:not(.collapsed) .side { position: absolute; top: 0; left: 0; bottom: 0; width: 240px; z-index: 15; box-shadow: var(--shadow); }
+  }
+  @media (max-width: 899px) {
+    .shell { grid-template-columns: minmax(0, 1fr); }
+    .side { position: fixed; top: 46px; left: 0; bottom: 0; width: 280px; max-width: 85vw; z-index: 40; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); }
+    body.drawer-open .side { transform: none; }
+    body.drawer-open .sidebar-backdrop { display: block; position: fixed; inset: 46px 0 0 0; background: rgba(9, 30, 66, .35); z-index: 35; }
+    .two { grid-template-columns: minmax(0, 1fr); }
+    .kv .lbl { display: none; }
+    .kv { gap: 12px; padding-left: 12px; }
+  }
+  @media (max-width: 599px) {
+    .main { padding: 12px 16px 24px; }
+    .ask { flex-wrap: wrap; }
+    .ask .t { flex-basis: 100%; }
+    .run, .stop { flex: 1; min-height: 40px; }
+    .ask .hint { display: none; }
+    .brandbox { border-right: 0; padding-right: 8px; }
+    #session-info { display: none; }
+    #conn .txt { display: none; }
+    .hdr-right { gap: 6px; padding-right: 8px; }
+    #header-menu { display: inline-flex; }
+    .hdr-extras { display: none; position: absolute; top: 46px; right: 8px; z-index: 45; flex-direction: column; align-items: stretch; gap: 10px; min-width: 220px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); }
+    body.menu-open .hdr-extras { display: flex; }
+    .menu-session { display: block; font-size: 12.5px; color: var(--text-2); }
+    .hdr-extras .seg button { flex: 1; }
+    .hdr-extras .tag { align-self: flex-start; }
+    .hdr-extras #logout { text-align: left; }
+    .iconbtn, .ask .star, .bm .x { width: 36px; height: 36px; }
+    .bm .x { top: 0; }
+    .seg button, .linkbtn, .quiet { min-height: 36px; }
+    .log .line { display: block; }
+    .log .line > span { margin-right: 8px; }
+    .grid td { max-width: 280px; }
+  }
+  @media (hover: none) {
+    .bm .x { opacity: 1; }
+  }
+
   /* Toast */
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); background: var(--toast-bg); color: var(--toast-text); font-size: 12.5px; padding: 7px 14px; border-radius: 4px; opacity: 0; transition: opacity .18s, transform .18s; pointer-events: none; z-index: 50; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .toast.show { opacity: 1; transform: translateX(-50%); }
@@ -199,16 +255,23 @@
     <span><span class="lbl">User</span><b id="db-user">…</b></span>
   </div>
   <div class="hdr-right">
-    <span id="conn" class="tag g hidden">● CONNECTED</span>
+    <span id="conn" class="tag g hidden"></span>
     <button id="reconnect" class="linkbtn hidden" type="button">Reconnect</button>
-    <span id="ro-tag" class="tag y hidden">READ-ONLY</span>
-    <div class="seg" role="group" aria-label="Theme">
-      <button id="theme-light" type="button" class="on">Light</button>
-      <button id="theme-dark" type="button">Dark</button>
+    <div class="hdr-extras" id="hdr-extras">
+      <div class="menu-session mono"><span id="menu-user"></span> @ <span id="menu-db"></span></div>
+      <span id="ro-tag" class="tag y hidden">READ-ONLY</span>
+      <div class="seg" role="group" aria-label="Theme">
+        <button id="theme-light" type="button" class="on">Light</button>
+        <button id="theme-dark" type="button">Dark</button>
+      </div>
+      <button id="logout" class="quiet hidden" type="button">Log out</button>
     </div>
-    <button id="logout" class="quiet hidden" type="button">Log out</button>
+    <button id="header-menu" class="iconbtn" type="button" title="Menu" aria-label="Menu" aria-expanded="false">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/></svg>
+    </button>
   </div>
 </header>
+<div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
 <section id="login-sec" class="login-wrap hidden">
   <div class="pan login">
@@ -455,6 +518,8 @@ function showApp(s) {
   SESSION_CHROME.forEach(id => $(id).classList.remove("hidden"));
   $("db-user").textContent = s.user;
   $("db-name").textContent = s.database;
+  $("menu-user").textContent = s.user;
+  $("menu-db").textContent = s.database;
   setConnection(s.reachable, s.detail);
   $("q").focus();
 }
@@ -708,7 +773,10 @@ function setConnection(reachable, detail) {
   disconnected = !reachable;
   const c = $("conn");
   c.className = "tag " + (reachable ? "g" : "r");
-  c.textContent = reachable ? "● CONNECTED" : "● DISCONNECTED";
+  const txt = document.createElement("span");
+  txt.className = "txt";
+  txt.textContent = reachable ? " CONNECTED" : " DISCONNECTED";
+  c.replaceChildren(document.createTextNode("●"), txt);
   c.title = reachable ? "" : (detail || "");
   $("reconnect").classList.toggle("hidden", reachable);
   const btn = $("ask");
@@ -840,13 +908,32 @@ function confirmSave() {
   $("q").focus();
 }
 
-function setSidebar(state) {
+function setSidebar(state, persist = true) {
   $("app").classList.toggle("collapsed", state === "collapsed");
   document.body.classList.toggle("sb-collapsed", state === "collapsed");
-  QF.store.set("qf.sidebar", state);
+  if (persist) QF.store.set("qf.sidebar", state);
 }
 
-function closeDrawer() {}
+// Under 900px the sidebar is an off-canvas drawer; from 900 to 1099px it opens as an
+// overlay. In both, the open state is temporary and never remembered.
+const drawerMode = () => window.matchMedia("(max-width: 899px)").matches;
+const overlayMode = () => window.matchMedia("(min-width: 900px) and (max-width: 1099px)").matches;
+
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+  if (overlayMode()) setSidebar("collapsed", false);
+}
+
+function toggleSidebar() {
+  const collapsed = $("app").classList.contains("collapsed");
+  if (drawerMode()) document.body.classList.toggle("drawer-open");
+  else setSidebar(collapsed ? "open" : "collapsed", !overlayMode());
+}
+
+function setMenu(open) {
+  document.body.classList.toggle("menu-open", open);
+  $("header-menu").setAttribute("aria-expanded", String(open));
+}
 
 // Called when a run starts.
 function onRunStart(question) {
@@ -972,11 +1059,18 @@ function boot() {
     flashButton(e.currentTarget, "Downloaded ✓");
   });
   bookmarks = QF.parseBookmarks(QF.store.get("qf.bookmarks", []));
-  setSidebar(QF.store.get("qf.sidebar", "open") === "collapsed" ? "collapsed" : "open");
+  const storedSidebar = QF.store.get("qf.sidebar", null);
+  if (overlayMode()) setSidebar("collapsed", false);
+  else if (storedSidebar === "open" || storedSidebar === "collapsed") setSidebar(storedSidebar, false);
+  else setSidebar(window.matchMedia("(max-width: 1099px)").matches ? "collapsed" : "open", false);
   renderSidebar();
   $("bm-search").addEventListener("input", renderSidebar);
-  $("sidebar-toggle").addEventListener("click", () =>
-    setSidebar($("app").classList.contains("collapsed") ? "open" : "collapsed"));
+  $("sidebar-toggle").addEventListener("click", toggleSidebar);
+  $("sidebar-backdrop").addEventListener("click", closeDrawer);
+  $("header-menu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    setMenu(!document.body.classList.contains("menu-open"));
+  });
   $("q").addEventListener("input", () => { updateStar(); renderSidebar(); });
   $("star").addEventListener("click", onStarClick);
   $("save-ok").addEventListener("click", confirmSave);
@@ -987,6 +1081,8 @@ function boot() {
   });
   document.addEventListener("click", (e) => {
     if (!$("save-pop").classList.contains("hidden") && !e.target.closest("#save-pop, #star")) closeSavePop();
+    if (document.body.classList.contains("menu-open") && !e.target.closest("#hdr-extras")) setMenu(false);
+    if (overlayMode() && !$("app").classList.contains("collapsed") && !e.target.closest("#sidebar, #sidebar-toggle")) closeDrawer();
   });
 
   $("stop").addEventListener("click", stopRun);
@@ -997,6 +1093,11 @@ function boot() {
       e.preventDefault();
       $("q").focus();
       $("q").select();
+    } else if (e.key === "Escape" && (document.body.classList.contains("drawer-open") ||
+               (overlayMode() && !$("app").classList.contains("collapsed")))) {
+      closeDrawer();
+    } else if (e.key === "Escape" && document.body.classList.contains("menu-open")) {
+      setMenu(false);
     } else if (e.key === "Escape" && currentRun.controller) {
       e.preventDefault();
       stopRun();
