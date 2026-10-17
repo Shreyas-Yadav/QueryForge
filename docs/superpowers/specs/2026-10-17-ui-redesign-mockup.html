@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueryForge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --surface-2: #fafbfc; --border: #dfe1e6; --divider: #ebecf0;
+    --text: #172b4d; --text-2: #42526e; --muted: #6b778c; --faint: #a5adba;
+    --accent: #0052cc; --accent-soft: #deebff; --accent-text: #0747a6; --focus: #4c9aff;
+    --star: #ffab00; --hot: #de350b;
+    --ok-bg: #e3fcef; --ok: #006644; --warn-bg: #fff7d6; --warn: #974f0c;
+    --err-bg: #ffebe6; --err: #bf2600; --err-border: #ffbdad;
+    --kw: #0052cc; --num: #974f0c; --hover: #f4f5f7; --skel: #ebecf0;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  [data-theme="dark"] {
+    --bg: #0e1116; --surface: #161a21; --surface-2: #12161c; --border: #262c36; --divider: #1f242d;
+    --text: #e6e9ee; --text-2: #b3bac5; --muted: #8590a0; --faint: #566070;
+    --accent: #579dff; --accent-soft: #1c2b42; --accent-text: #85b8ff; --focus: #579dff;
+    --star: #f5b73b; --hot: #f87168;
+    --ok-bg: #12301f; --ok: #4bce97; --warn-bg: #33290f; --warn: #e2b203;
+    --err-bg: #3a1a14; --err: #fd9891; --err-border: #5d2a20;
+    --kw: #85b8ff; --num: #e2b203; --hover: #1c212a; --skel: #222833;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e9ebee; font-family: var(--sans); padding: 24px; color: #333; }
+  .note { max-width: 1180px; margin: 0 auto 12px; font: 14px/1.5 var(--sans); }
+  .note h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+  .note p { margin: 0 0 8px; color: #555; }
+  .note kbd, .kbd { font-family: var(--mono); font-size: 11.5px; border: 1px solid #ccc; border-radius: 3px; padding: 0 4px; background: #fff; }
+  .demo { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: #555; }
+  .demo button { font: 12.5px var(--sans); border: 1px solid #c8ccd2; background: #fff; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+
+  .app { max-width: 1180px; margin: 0 auto; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font: 13.5px/1.5 var(--sans); position: relative; }
+  .mono, pre, code, td.m { font-family: var(--mono); }
+  button { font-family: var(--sans); cursor: pointer; }
+
+  /* Header */
+  .hdr { display: flex; align-items: center; height: 46px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; }
+  .brandbox { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 100%; border-right: 1px solid var(--divider); width: 240px; transition: width .2s; }
+  .collapsed .brandbox { width: 52px; justify-content: center; }
+  .collapsed .brand { display: none; }
+  .iconbtn { width: 28px; height: 28px; border-radius: 4px; border: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+  .iconbtn:hover { background: var(--hover); color: var(--text); }
+  .brand { font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+  .kv { display: flex; gap: 22px; color: var(--muted); padding-left: 18px; }
+  .kv b { color: var(--text); font-weight: 500; margin-left: 6px; font-family: var(--mono); font-size: 12.5px; }
+  .st { margin-left: auto; display: flex; gap: 8px; padding-right: 12px; align-items: center; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; letter-spacing: .03em; }
+  .tag.g { background: var(--ok-bg); color: var(--ok); }
+  .tag.y { background: var(--warn-bg); color: var(--warn); }
+  .tag.r { background: var(--err-bg); color: var(--err); cursor: help; }
+  .reconnect { color: var(--accent); font-size: 12.5px; background: none; border: 0; padding: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-left: 8px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 3px 10px; }
+  .seg button.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+  .link { color: var(--muted); background: none; border: 0; font-size: 13px; padding: 0 4px 0 10px; }
+  .link:hover { color: var(--text); }
+
+  /* Shell + sidebar */
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 640px; transition: grid-template-columns .2s; }
+  .collapsed .shell { grid-template-columns: 52px 1fr; }
+  .side { background: var(--surface); border-right: 1px solid var(--border); padding: 12px 10px; font-size: 13px; overflow: hidden; }
+  .search { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; color: var(--faint); margin-bottom: 8px; font-size: 12.5px; }
+  .grp { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 12px 8px 4px; display: flex; justify-content: space-between; }
+  .bm { padding: 6px 8px; border-radius: 4px; color: var(--text-2); display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
+  .bm:hover { background: var(--hover); }
+  .bm.on { background: var(--accent-soft); color: var(--accent-text); }
+  .bm .s { color: var(--star); font-size: 12px; padding-top: 1px; flex-shrink: 0; }
+  .bm .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bm .meta { display: block; font-size: 11px; color: var(--faint); }
+  .bm.on .meta { color: var(--accent); }
+  .collapsed .side { padding: 10px 6px; }
+  .collapsed .search, .collapsed .bm .lbl, .collapsed .grp span { display: none; }
+  .collapsed .grp { height: 1px; background: var(--divider); padding: 0; margin: 8px 4px; font-size: 0; }
+  .collapsed .bm { justify-content: center; padding: 8px 0; }
+  .collapsed .bm .s { font-size: 14px; }
+
+  /* Main */
+  .main { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .ask { display: flex; gap: 8px; }
+  .ask .t { flex: 1; background: var(--surface); border: 2px solid var(--border); border-radius: 4px; padding: 0 8px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .ask .t:focus-within { border-color: var(--focus); }
+  .ask input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font: 14px var(--sans); padding: 8px 0; }
+  .ask input::placeholder { color: var(--faint); }
+  .ask .hint { font-family: var(--mono); font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; }
+  .ask .star { color: var(--star); font-size: 16px; background: none; border: 0; padding: 0 2px; }
+  .run { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 0 16px; font-weight: 600; font-size: 13.5px; min-width: 132px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  [data-theme="dark"] .run { color: #0b1a33; }
+  .run:disabled { opacity: .85; cursor: default; }
+  .run .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .stop { background: var(--surface); color: var(--err); border: 1px solid var(--err-border); border-radius: 4px; padding: 0 12px; font-size: 13px; font-weight: 500; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .pan { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; min-width: 0; }
+  .ph { display: flex; align-items: center; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--divider); font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; gap: 8px; }
+  .ph .r { margin-left: auto; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; display: flex; gap: 14px; align-items: center; }
+  .ph .r .sep { color: var(--faint); }
+  .act-btn { background: none; border: 0; color: var(--accent); font-size: 12.5px; padding: 0; }
+  .act-btn.done { color: var(--ok); }
+  .answer { padding: 12px; font-size: 14px; line-height: 1.6; }
+  .errbox { margin: 12px; padding: 10px 12px; background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 4px; color: var(--text); font-size: 13.5px; }
+  .errbox b { color: var(--err); display: block; margin-bottom: 2px; }
+  .errbox code { background: transparent; padding: 0; }
+  code { background: var(--hover); padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
+  pre { margin: 0; white-space: pre-wrap; padding: 12px; font-size: 12.5px; line-height: 1.6; background: var(--surface-2); color: var(--text); min-height: 120px; }
+  pre .k { color: var(--kw); font-weight: 500; } pre .v { color: var(--num); }
+
+  /* Results */
+  .trunc { display: flex; gap: 8px; align-items: center; padding: 7px 12px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; border-bottom: 1px solid var(--divider); }
+  .tablewrap { overflow: auto; max-height: 420px; }
+  .tablewrap::-webkit-scrollbar { height: 10px; width: 10px; }
+  .tablewrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid var(--surface); }
+  table { border-collapse: collapse; width: max-content; min-width: 100%; }
+  th { text-align: left; font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 8px 12px; border-bottom: 2px solid var(--divider); white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  th .arr { color: var(--accent); margin-left: 4px; font-size: 10px; }
+  th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--divider); font-size: 13px; white-space: nowrap; }
+  tr:hover td { background: var(--hover); }
+  td.m { color: var(--accent); font-size: 12.5px; cursor: copy; }
+  td.m:hover { text-decoration: underline dotted; }
+  td.null { color: var(--faint); }
+  .stick { position: sticky; left: 0; background: var(--surface); z-index: 2; box-shadow: 1px 0 0 var(--divider); }
+  th.stick { z-index: 3; }
+  td .bar { display: inline-block; height: 4px; background: var(--hot); border-radius: 2px; vertical-align: middle; margin-right: 8px; opacity: .75; }
+  .skel { display: inline-block; height: 10px; border-radius: 3px; background: var(--skel); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  /* Activity */
+  details > summary { list-style: none; cursor: pointer; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  .chev { display: inline-block; transition: transform .15s; font-size: 9px; width: 10px; color: var(--muted); }
+  details[open] > summary .chev { transform: rotate(90deg); }
+  .act > summary { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; }
+  .act > summary .live { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--accent); font-family: var(--mono); font-size: 12px; }
+  .act > summary .r { margin-left: auto; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
+  .log { border-top: 1px solid var(--divider); padding: 8px 0; font-size: 12px; }
+  .log div { display: grid; grid-template-columns: 64px 52px 1fr; gap: 10px; padding: 2px 12px; color: var(--text-2); }
+  .log .ts { color: var(--faint); } .log .tl { color: var(--accent); } .log .th { color: var(--muted); font-style: italic; } .log .er { color: var(--err); }
+
+  .toast { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(10px); background: #172b4d; color: #fff; font-size: 12.5px; padding: 7px 14px; border-radius: 4px; opacity: 0; transition: all .18s; pointer-events: none; }
+  [data-theme="dark"] .toast { background: #e6e9ee; color: #0e1116; }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="note">
+  <h2>Classic v3: all 14 UX improvements</h2>
+  <p>This mockup works. Press <kbd>⌘K</kbd> to focus the question box, <kbd>Enter</kbd> to run, <kbd>↑</kbd> to recall the last question, and <kbd>Esc</kbd> to stop. Click a SQL_ID or plan hash to copy it, and click a column header to sort.</p>
+  <div class="demo">Preview states:
+    <button onclick="startRun()">Simulate a run</button>
+    <button onclick="showError()">Show an error</button>
+    <button onclick="toggleDisconnected()">Toggle disconnected</button>
+  </div>
+</div>
+
+<div class="app" id="app" data-theme="light">
+  <div class="hdr">
+    <div class="brandbox">
+      <button class="iconbtn" title="Toggle sidebar" onclick="app.classList.toggle('collapsed')">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><line x1="6" y1="3" x2="6" y2="13"/></svg>
+      </button>
+      <span class="brand">QueryForge</span>
+    </div>
+    <div class="kv"><span>Database<b>ORCLPDB</b></span><span>User<b>shreyas</b></span></div>
+    <div class="st">
+      <span id="conn" class="tag g">● CONNECTED</span>
+      <button id="reconnect" class="reconnect hidden" onclick="toggleDisconnected()">Reconnect</button>
+      <span class="tag y">READ-ONLY</span>
+      <div class="seg">
+        <button class="on" onclick="setTheme(this,'light')">Light</button>
+        <button onclick="setTheme(this,'dark')">Dark</button>
+      </div>
+      <button class="link">Log out</button>
+    </div>
+  </div>
+
+  <div class="shell">
+    <aside class="side">
+      <div class="search">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></svg>
+        Search saved…
+      </div>
+      <div class="grp">Top SQL <span>3</span></div>
+      <div class="bm on" title="Top 5 SQL by elapsed time in the last hour"><span class="s">★</span><span class="lbl">Top 5 SQL by elapsed, last hour<span class="meta">ran 2 min ago</span></span></div>
+      <div class="bm" title="Top SQL by CPU today"><span class="s">★</span><span class="lbl">Top SQL by CPU today<span class="meta">yesterday</span></span></div>
+      <div class="bm" title="High buffer-gets per exec"><span class="s">★</span><span class="lbl">High buffer-gets per exec<span class="meta">3 days ago</span></span></div>
+      <div class="grp">Waits <span>2</span></div>
+      <div class="bm" title="Active sessions by wait class"><span class="s">★</span><span class="lbl">Active sessions by wait class<span class="meta">1 hr ago</span></span></div>
+      <div class="bm" title="Blocking sessions now"><span class="s">★</span><span class="lbl">Blocking sessions now<span class="meta">today</span></span></div>
+      <div class="grp">Plans <span>1</span></div>
+      <div class="bm" title="Plan changes for a sql_id"><span class="s">★</span><span class="lbl">Plan changes for a sql_id<span class="meta">last week</span></span></div>
+    </aside>
+
+    <main class="main">
+      <form class="ask" id="askform" onsubmit="event.preventDefault(); startRun();">
+        <div class="t">
+          <input id="q" value="Top 5 SQL by elapsed time in the last hour" placeholder="Ask about SQL performance, waits, plans…" autocomplete="off">
+          <span class="hint" id="khint">⌘K</span>
+          <button type="button" class="star" title="Saved — click to remove">★</button>
+        </div>
+        <button type="submit" class="run" id="run">Run</button>
+        <button type="button" class="stop hidden" id="stop" onclick="stopRun()">Stop <span class="kbd" style="border-color:var(--err-border);background:transparent">Esc</span></button>
+      </form>
+
+      <div class="two">
+        <div class="pan">
+          <div class="ph">Answer</div>
+          <div id="answer" class="answer"></div>
+        </div>
+        <div class="pan">
+          <div class="ph">Generated SQL <span class="r"><button class="act-btn" id="copysql" onclick="copySql(this)">Copy</button></span></div>
+          <pre id="sql"></pre>
+        </div>
+      </div>
+
+      <div class="pan" id="respan">
+        <div class="ph">Results
+          <span class="r">
+            <span id="resmeta"></span>
+            <span class="sep">|</span>
+            <button class="act-btn" onclick="startRun()" title="Run the same question again">↻ Re-run</button>
+            <button class="act-btn" id="csv" onclick="exportCsv(this)">Export CSV</button>
+          </span>
+        </div>
+        <div class="trunc" id="trunc">⚠ Showing the first 500 rows. The result was truncated; narrow the question to see the rest.</div>
+        <div class="tablewrap"><table id="tbl"></table></div>
+      </div>
+
+      <details class="pan act" id="act">
+        <summary><span class="chev">▶</span>Activity <span class="live" id="live"></span><span class="r" id="actmeta"></span></summary>
+        <div class="log mono" id="log"></div>
+      </details>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+const app = document.getElementById('app'), $ = id => document.getElementById(id);
+const COLS = [
+  ['SQL_ID','m'],['Plan hash','mn'],['Execs','n'],['Elapsed (s)','bar'],['CPU (s)','n'],['User I/O wait (s)','n'],
+  ['Buffer gets','n'],['Disk reads','n'],['Rows processed','n'],['Parsing schema',''],['Module',''],['Top wait event',''],['Last active','mono']];
+const ROWS = [
+  ['8f2k1v9xq7m3a',3912874411,1204,412.6,88.1,310.4,14882310,1902113,1204,'APP_USER','ORDERS_SVC','db file sequential read','2026-10-17 09:41:12'],
+  ['a7cz0dd2h5r1p',1188023957,96,187.3,171.9,4.2,52004118,12880,9410,'BATCH','NIGHTLY_ETL','CPU','2026-10-17 09:38:55'],
+  ['0w4m8sk1t9yq2',2290115532,38510,61.0,58.4,0.9,2310447,1022,38510,'APP_USER',null,'CPU','2026-10-17 09:42:01'],
+  ['5u1bq3ffn8x0c',774019265,12,44.8,3.2,40.1,190221,188004,12,'REPORTS','FIN_REPORT','direct path read','2026-10-17 09:12:37'],
+  ['gq7v2n0lk4j6d',3001276649,2880,30.2,29.7,0.2,1004553,88,2880,'APP_USER','ORDERS_SVC',null,'2026-10-17 09:42:09']];
+const ANSWER = '<code>8f2k1v9xq7m3a</code> dominates — 412 s elapsed over 1,204 executions (0.34 s/exec), mostly on <code>db file sequential read</code>. Its plan hash changed in the last hour; worth comparing plans.';
+const SQL = `<span class="k">SELECT</span> sql_id, plan_hash_value, executions,
+       elapsed_time/<span class="v">1e6</span> elapsed_s, cpu_time/<span class="v">1e6</span> cpu_s,
+       user_io_wait_time/<span class="v">1e6</span> io_s, buffer_gets, disk_reads, ...
+<span class="k">FROM</span>   v$sql
+<span class="k">WHERE</span>  last_active_time &gt; SYSDATE - <span class="v">1</span>/<span class="v">24</span>
+<span class="k">ORDER BY</span> elapsed_time <span class="k">DESC</span>
+<span class="k">FETCH FIRST</span> <span class="v">500</span> <span class="k">ROWS ONLY</span>`;
+const STEPS = [
+  ['status','','Connected to ORCLPDB'],
+  ['think','th','Top SQL by elapsed → V$SQL, filter on last_active_time'],
+  ['tool','tl','describe_table("V$SQL")'],
+  ['tool','tl','run_query(...) → 5 rows'],
+  ['status','','Done']];
+const LIVE = ['planning…','reading V$SQL columns…','describing V$SQL…','running query…','summarising…'];
+
+let sortCol = 3, sortDir = -1, timer = null, t0 = 0, lastQ = 'Top 5 SQL by elapsed time in the last hour', disconnected = false;
+
+const fmt = v => typeof v === 'number' ? v.toLocaleString('en-US', { maximumFractionDigits: 1, minimumFractionDigits: Number.isInteger(v) ? 0 : 1 }) : v;
+const hhmmss = d => d.toTimeString().slice(0, 8);
+
+function renderTable() {
+  const rows = [...ROWS].sort((a, b) => {
+    const x = a[sortCol], y = b[sortCol];
+    if (x === null) return 1; if (y === null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+  const max = Math.max(...ROWS.map(r => r[3]));
+  let h = '<thead><tr>' + COLS.map(([c, k], i) =>
+    `<th class="${k.includes('n') || k === 'bar' ? 'n' : ''} ${i === 0 ? 'stick' : ''}" onclick="sortBy(${i})">${c}${i === sortCol ? `<span class="arr">${sortDir < 0 ? '▼' : '▲'}</span>` : ''}</th>`).join('') + '</tr></thead><tbody>';
+  rows.forEach(r => {
+    h += '<tr>' + r.map((v, i) => {
+      const k = COLS[i][1];
+      if (v === null) return `<td class="null ${k.includes('n') ? 'n' : ''}">—</td>`;
+      if (i === 0) return `<td class="m stick" title="Click to copy" onclick="copy('${v}')">${v}</td>`;
+      if (k === 'mn') return `<td class="m n" title="Click to copy" onclick="copy('${v}')">${v}</td>`;
+      if (k === 'bar') return `<td class="n"><span class="bar" style="width:${Math.max(4, Math.round(v / max * 80))}px"></span>${fmt(v)}</td>`;
+      return `<td class="${k === 'n' ? 'n' : ''} ${k === 'mono' ? 'mono' : ''}">${fmt(v)}</td>`;
+    }).join('') + '</tr>';
+  });
+  $('tbl').innerHTML = h + '</tbody>';
+}
+function sortBy(i) { sortDir = sortCol === i ? -sortDir : -1; sortCol = i; renderTable(); }
+
+function renderSkeleton() {
+  let h = '<thead><tr>' + COLS.map(([c], i) => `<th class="${i === 0 ? 'stick' : ''}">${c}</th>`).join('') + '</tr></thead><tbody>';
+  for (let r = 0; r < 5; r++) h += '<tr>' + COLS.map((_, i) => `<td class="${i === 0 ? 'stick' : ''}"><span class="skel" style="width:${40 + ((r * 7 + i * 13) % 50)}px"></span></td>`).join('') + '</tr>';
+  $('tbl').innerHTML = h + '</tbody>';
+}
+
+function renderLog(n, extra) {
+  $('log').innerHTML = STEPS.slice(0, n).map((s, i) =>
+    `<div><span class="ts">00:0${[0, 0.4, 1.1, 3.8, 6.2][i].toFixed(1)}</span><span class="${s[1]}">${s[0]}</span><span class="${s[1]}">${s[2]}</span></div>`).join('') + (extra || '');
+}
+
+function showDone(when) {
+  $('answer').innerHTML = ANSWER;
+  $('sql').innerHTML = SQL;
+  $('respan').classList.remove('hidden');
+  $('trunc').classList.remove('hidden');
+  renderTable();
+  $('resmeta').textContent = `5 rows · 13 columns · 84 ms · Ran ${hhmmss(when)} on ORCLPDB`;
+  renderLog(5);
+  $('live').textContent = '';
+  $('actmeta').textContent = '5 steps · 6.2 s';
+}
+
+function setRunning(on) {
+  $('run').disabled = on || disconnected;
+  $('stop').classList.toggle('hidden', !on);
+  document.title = on ? '● Running – QueryForge' : 'QueryForge';
+  if (!on) $('run').innerHTML = 'Run';
+}
+
+function startRun() {
+  if (timer || disconnected) return;
+  lastQ = $('q').value || lastQ;
+  t0 = Date.now();
+  setRunning(true);
+  $('answer').innerHTML = '<span class="skel" style="width:92%"></span><br><span class="skel" style="width:78%"></span><br><span class="skel" style="width:60%"></span>';
+  $('sql').innerHTML = '';
+  $('respan').classList.remove('hidden');
+  $('trunc').classList.add('hidden');
+  $('resmeta').textContent = 'running…';
+  renderSkeleton();
+  $('actmeta').textContent = '';
+  let step = 0;
+  renderLog(1);
+  timer = setInterval(() => {
+    const s = (Date.now() - t0) / 1000;
+    $('run').innerHTML = `<span class="spin"></span>Running · ${s.toFixed(1)}s`;
+    const i = Math.min(4, Math.floor(s / 0.9));
+    $('live').textContent = '· ' + LIVE[i];
+    if (i !== step) { step = i; renderLog(Math.min(4, i + 1)); }
+    if (s > 4.4) { clearInterval(timer); timer = null; setRunning(false); showDone(new Date()); }
+  }, 100);
+}
+
+function stopRun() {
+  if (!timer) return;
+  clearInterval(timer); timer = null; setRunning(false);
+  $('answer').innerHTML = '<div class="errbox" style="margin:0;background:var(--warn-bg);border-color:var(--warn-bg)"><b style="color:var(--warn)">Run stopped</b>You cancelled this run. Previous results were cleared.</div>';
+  $('respan').classList.add('hidden');
+  $('live').textContent = '· stopped';
+  renderLog(2, `<div><span class="ts">00:0${((Date.now() - t0) / 1000).toFixed(1)}</span><span class="er">stop</span><span class="er">Cancelled by user</span></div>`);
+}
+
+function showError() {
+  if (timer) { clearInterval(timer); timer = null; setRunning(false); }
+  $('answer').innerHTML = '<div class="errbox" style="margin:0"><b>Query failed</b><code>ORA-00942: table or view does not exist</code> — <code>DBA_HIST_ACTIVE_SESS_HISTORY</code>. Your user may lack <code>SELECT_CATALOG_ROLE</code> on this PDB, or AWR isn\'t licensed here.</div>';
+  $('sql').innerHTML = '<span class="k">SELECT</span> event, <span class="k">COUNT</span>(*) <span class="k">FROM</span> dba_hist_active_sess_history ...';
+  $('respan').classList.add('hidden');
+  $('live').textContent = '';
+  $('actmeta').textContent = '3 steps · 2.4 s · 1 error';
+  renderLog(3, '<div><span class="ts">00:02.4</span><span class="er">error</span><span class="er">run_query: ORA-00942</span></div>');
+}
+
+function toggleDisconnected() {
+  disconnected = !disconnected;
+  const c = $('conn');
+  c.className = 'tag ' + (disconnected ? 'r' : 'g');
+  c.textContent = disconnected ? '● DISCONNECTED' : '● CONNECTED';
+  c.title = disconnected ? 'ORA-03113: end-of-file on communication channel (lost 09:43:02)' : '';
+  $('reconnect').classList.toggle('hidden', !disconnected);
+  $('run').disabled = disconnected;
+  $('run').title = disconnected ? 'Reconnect to run queries' : '';
+}
+
+let toastT;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1400); }
+function copy(v) { try { navigator.clipboard.writeText(String(v)); } catch (e) {} toast('Copied ' + v); }
+function flash(btn, label) { const o = btn.textContent; btn.textContent = label; btn.classList.add('done'); setTimeout(() => { btn.textContent = o; btn.classList.remove('done'); }, 1400); }
+function copySql(btn) { try { navigator.clipboard.writeText($('sql').textContent); } catch (e) {} flash(btn, 'Copied ✓'); }
+function exportCsv(btn) {
+  const csv = [COLS.map(c => c[0]), ...ROWS].map(r => r.map(v => v === null ? '' : `"${v}"`).join(',')).join('\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'queryforge-results.csv'; a.click();
+  flash(btn, 'Downloaded ✓');
+}
+function setTheme(btn, t) { app.dataset.theme = t; btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn)); }
+
+document.querySelectorAll('.bm').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.bm').forEach(x => x.classList.toggle('on', x === b));
+  $('q').value = b.title; $('q').focus();
+}));
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('q').focus(); $('q').select(); }
+  else if (e.key === 'Escape' && timer) { e.preventDefault(); stopRun(); }
+  else if (e.key === 'ArrowUp' && document.activeElement === $('q')) { e.preventDefault(); $('q').value = lastQ; }
+});
+$('q').addEventListener('focus', () => $('khint').textContent = '↵');
+$('q').addEventListener('blur', () => $('khint').textContent = '⌘K');
+
+showDone(new Date(Date.now() - 2 * 60 * 1000));
+</script>
+</body>
+</html>
