@@ -114,3 +114,47 @@ def test_activity_line_and_live_step():
     assert qf('QF.liveStep({type:"tool_call", name:"describe_table", input:{}})') == "describe_table…"
     assert qf('QF.liveStep({type:"status", message:"Thinking…"})') == "Thinking…"
     assert qf('QF.liveStep({type:"answer", text:"x"})') is None
+
+
+def test_store_falls_back_without_local_storage():
+    assert qf('QF.store.get("qf.theme", "light")') == "light"  # Node has no localStorage
+    assert qf('(QF.store.set("qf.x", 1), "ok")') == "ok"  # must not throw
+
+
+def test_store_round_trips_through_local_storage():
+    code = ('(() => { const m = {}; globalThis.localStorage = {getItem: k => k in m ? m[k] : null,'
+            ' setItem: (k, v) => { m[k] = String(v); }};'
+            ' QF.store.set("qf.theme", "dark"); return QF.store.get("qf.theme", "light"); })()')
+    assert qf(code) == "dark"
+
+
+def test_load_bookmarks_survives_corrupt_json():
+    assert qf('QF.parseBookmarks("not json")') == []
+    assert qf('QF.parseBookmarks([{question:"q", group:"G", lastRun:null}, {nope:1}, 5])') == [
+        {"question": "q", "group": "G", "lastRun": None}
+    ]
+
+
+def test_add_bookmark_defaults_group_and_dedupes():
+    out = qf('QF.addBookmark(QF.addBookmark([], " Top SQL ", ""), "Top SQL", "Waits")')
+    assert out == [{"question": "Top SQL", "group": "Waits", "lastRun": None}]
+    assert qf('QF.addBookmark([], "q", "  ")')[0]["group"] == "Saved"
+
+
+def test_remove_and_touch_bookmark():
+    assert qf('QF.removeBookmark([{question:"a",group:"S",lastRun:null}], "a")') == []
+    assert qf('QF.touchBookmark([{question:"a",group:"S",lastRun:null}], "a", 5)')[0]["lastRun"] == 5
+    assert qf('QF.touchBookmark([{question:"a",group:"S",lastRun:null}], "b", 5)')[0]["lastRun"] is None
+
+
+def test_bookmark_helpers_do_not_mutate():
+    assert qf('(() => { const l = [{question:"a",group:"S",lastRun:null}];'
+              ' QF.touchBookmark(l, "a", 5); QF.removeBookmark(l, "a"); return l; })()') == [
+        {"question": "a", "group": "S", "lastRun": None}
+    ]
+
+
+def test_group_bookmarks_filters_and_drops_empty_groups():
+    out = qf('QF.groupBookmarks([{question:"Top SQL by CPU",group:"Top SQL",lastRun:null},'
+             '{question:"Blocking sessions",group:"Waits",lastRun:null}], "cpu")')
+    assert out == [{"group": "Top SQL", "items": [{"question": "Top SQL by CPU", "group": "Top SQL", "lastRun": None}]}]

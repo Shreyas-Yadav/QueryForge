@@ -176,6 +176,53 @@ QF.toCsv = (columns, rows) => {
   return [columns, ...rows].map(r => r.map(field).join(",")).join("\r\n");
 };
 
+// --- storage: per-browser conveniences; every access may throw or be missing ---
+QF.store = {
+  get(key, fallback) {
+    try {
+      const raw = globalThis.localStorage.getItem(key);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch (e) {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try { globalThis.localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* storage unavailable */ }
+  },
+};
+
+// --- saved queries: {question, group, lastRun} ---
+QF.parseBookmarks = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(b => b && typeof b.question === "string" && b.question.trim() && typeof b.group === "string")
+    .map(b => ({ question: b.question, group: b.group, lastRun: typeof b.lastRun === "number" ? b.lastRun : null }));
+};
+
+QF.addBookmark = (list, question, group) => {
+  const q = question.trim();
+  const item = { question: q, group: group.trim() || "Saved", lastRun: null };
+  const i = list.findIndex(b => b.question === q);
+  if (i === -1) return [...list, item];
+  return list.map((b, j) => j === i ? { ...item, lastRun: b.lastRun } : b);
+};
+
+QF.removeBookmark = (list, question) => list.filter(b => b.question !== question);
+
+QF.touchBookmark = (list, question, nowMs) =>
+  list.map(b => b.question === question ? { ...b, lastRun: nowMs } : b);
+
+QF.groupBookmarks = (list, filter) => {
+  const f = filter.trim().toLowerCase();
+  const groups = [];
+  list.filter(b => b.question.toLowerCase().includes(f)).forEach(b => {
+    let g = groups.find(x => x.group === b.group);
+    if (!g) groups.push(g = { group: b.group, items: [] });
+    g.items.push(b);
+  });
+  return groups;
+};
+
 // --- time ---
 QF.relativeTime = (thenMs, nowMs) => {
   const s = (nowMs - thenMs) / 1000;
