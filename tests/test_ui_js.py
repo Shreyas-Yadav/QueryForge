@@ -119,7 +119,7 @@ def test_activity_line_and_live_step():
     assert qf('QF.activityLine({type:"tool_call", name:"describe_table", input:{name:"V$SQL"}})') == \
         {"kind": "tool", "text": 'describe_table({"name":"V$SQL"})'}
     assert qf('QF.activityLine({type:"tool_error", name:"run_query", message:"ORA-00942"})')["kind"] == "error"
-    assert qf('QF.liveStep({type:"tool_call", name:"describe_table", input:{}})') == "describe_table…"
+    assert qf('QF.liveStep({type:"tool_call", name:"describe_table", input:{}})') == "describe_table()"
     assert qf('QF.liveStep({type:"status", message:"Thinking…"})') == "Thinking…"
     assert qf('QF.liveStep({type:"answer", text:"x"})') is None
 
@@ -190,3 +190,31 @@ def test_activity_is_collapsed_by_default():
     html = page_html()
     tag = html.split('id="activity-sec"', 1)[0].rsplit("<", 1)[1] + html.split('id="activity-sec"', 1)[1].split(">", 1)[0]
     assert tag.startswith("details") and " open" not in tag
+
+
+def test_live_step_shows_short_tool_args():
+    assert qf('QF.liveStep({type:"tool_call", name:"describe_table", input:{name:"V$SQL"}})') == 'describe_table("V$SQL")'
+    step = qf('QF.liveStep({type:"tool_call", name:"run_query", input:{sql:"SELECT " + "x".repeat(100)}})')
+    assert step.startswith('run_query("SELECT') and len(step) <= len("run_query()") + 41
+
+
+def test_assistant_text_uses_a_known_activity_kind():
+    assert qf('QF.activityLine({type:"assistant_text", text:"Let me check V$SQL."})') == \
+        {"kind": "think", "text": "Let me check V$SQL."}
+
+
+def test_parse_sse_event_skips_malformed_json():
+    assert qf("QF.parseSseEvent('data: {\"type\":\"answer\",\"text\":\"ok\"}')") == {"type": "answer", "text": "ok"}
+    assert qf("QF.parseSseEvent('data: {not json')") is None
+    assert qf("QF.parseSseEvent('data: 5')") is None
+
+
+def test_to_csv_neutralises_spreadsheet_formulas():
+    out = qf('QF.toCsv(["A"], [["=HYPERLINK(1)"], ["+1"], ["@x"], ["-cmd"], [-5], ["ok"]])')
+    assert out == "A\r\n'=HYPERLINK(1)\r\n'+1\r\n'@x\r\n'-cmd\r\n-5\r\nok"
+
+
+def test_dark_theme_is_applied_before_the_page_paints():
+    html = page_html()
+    head = html.split("<body", 1)[0]
+    assert "qf.theme" in head and "dataset.theme" in head

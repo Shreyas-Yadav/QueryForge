@@ -4,6 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>QueryForge</title>
+<!-- Apply the saved theme before first paint; kept apart from the main script on purpose. -->
+<script data-theme-boot>
+  try { if (JSON.parse(localStorage.getItem("qf.theme")) === "dark") document.documentElement.dataset.theme = "dark"; } catch (e) {}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -57,6 +61,7 @@
   .tag.r { background: var(--err-bg); color: var(--err); cursor: help; }
   .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); font-size: 12.5px; }
   .linkbtn:hover { text-decoration: underline; }
+  .linkbtn:disabled { color: var(--faint); cursor: default; text-decoration: none; }
   .linkbtn.done { color: var(--ok); }
   .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
   .seg button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 4px 10px; }
@@ -376,7 +381,9 @@ QF.sortRows = (rows, col, dir) => [...rows].sort((a, b) => {
 QF.toCsv = (columns, rows) => {
   const field = (v) => {
     if (v === null || v === undefined) return "";
-    const s = String(v);
+    let s = String(v);
+    // A text cell starting with = + - @ would run as a formula in Excel; prefix a quote.
+    if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
     return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   return [columns, ...rows].map(r => r.map(field).join(",")).join("\r\n");
@@ -451,7 +458,7 @@ QF.activityLine = (ev) => {
   switch (ev.type) {
     case "status": return { kind: "status", text: ev.message };
     case "thinking": return { kind: "think", text: cut(ev.text, 200), title: ev.text };
-    case "assistant_text": return { kind: "text", text: ev.text };
+    case "assistant_text": return { kind: "think", text: ev.text };
     case "tool_call": return { kind: "tool", text: ev.name + "(" + cut(JSON.stringify(ev.input), 160) + ")" };
     case "result": return { kind: "tool", text: "run_query → " + ev.row_count + " row" + (ev.row_count === 1 ? "" : "s") };
     case "tool_error": return { kind: "error", text: ev.name + ": " + ev.message };
@@ -462,9 +469,22 @@ QF.activityLine = (ev) => {
 
 QF.liveStep = (ev) => {
   if (ev.type === "status") return ev.message;
-  if (ev.type === "tool_call") return ev.name + "…";
+  if (ev.type === "tool_call") {
+    const args = Object.values(ev.input || {}).map(v => JSON.stringify(v)).join(", ");
+    return ev.name + "(" + cut(args, 40) + ")";
+  }
   if (ev.type === "thinking") return "thinking…";
   return null;
+};
+
+// One SSE "data:" line → event object, or null when the payload isn't a JSON object.
+QF.parseSseEvent = (line) => {
+  try {
+    const ev = JSON.parse(line.replace(/^data: /, ""));
+    return ev && typeof ev === "object" && typeof ev.type === "string" ? ev : null;
+  } catch (e) {
+    return null;
+  }
 };
 
 const $ = (id) => document.getElementById(id);
@@ -684,10 +704,12 @@ function handleEvent(ev) {
   switch (ev.type) {
     case "sql":
       currentRun.sqlAt = Date.now();
-      $("sql").textContent = ev.sql;
+      // Live preview until a result arrives; after that the panel shows the SQL behind the Results.
+      if (!currentRun.sawResult) $("sql").textContent = ev.sql;
       break;
     case "result":
       currentRun.sawResult = true;
+      if (ev.sql) $("sql").textContent = ev.sql;  // keep SQL and Results in step if a later query fails
       showResult(ev);
       break;
     case "tool_error":    currentRun.lastToolError = ev.message; break;
@@ -708,6 +730,10 @@ function finishRun() {
   }
   if (!currentRun.sawResult) $("result-sec").classList.add("hidden");
   $("activity-live").textContent = "";
+  showActivitySummary();
+}
+
+function showActivitySummary() {
   $("activity-meta").textContent = currentRun.steps + " step" + (currentRun.steps === 1 ? "" : "s") +
     " · " + ((Date.now() - currentRun.startedAt) / 1000).toFixed(1) + " s";
 }
@@ -722,6 +748,7 @@ function skeletonLines(widths) {
 }
 
 function showSkeletons() {
+  table = { columns: [], rows: [], sortCol: -1, sortDir: -1 };
   const a = $("answer");
   a.replaceChildren();
   skeletonLines(["92%", "78%", "60%"]).forEach(el => { a.append(el, document.createElement("br")); });
@@ -743,6 +770,8 @@ function setRunning(on) {
   currentRun.timer = null;
   const btn = $("ask");
   $("stop").classList.toggle("hidden", !on);
+  $("csv").disabled = on;
+  $("rerun").disabled = on;
   document.title = on ? "● Running – QueryForge" : "QueryForge";
   if (on) {
     btn.disabled = true;
@@ -769,6 +798,7 @@ function stopRun() {
   $("result-sec").classList.add("hidden");
   addActivity("stop", "Cancelled by user");
   $("activity-live").textContent = "· stopped";
+  showActivitySummary();
 }
 
 function setConnection(reachable, detail) {
@@ -825,6 +855,13 @@ function renderSidebar() {
     list.appendChild(note);
     return;
   }
+  if (!groups.length) {
+    const note = document.createElement("div");
+    note.className = "empty-note";
+    note.textContent = "No saved queries match.";
+    list.appendChild(note);
+    return;
+  }
   const current = $("q").value.trim();
   const now = Date.now();
   groups.forEach(g => {
@@ -867,7 +904,11 @@ function renderSidebar() {
       });
       item.append(star, lbl, x);
       item.addEventListener("click", () => pickBookmark(b.question));
-      item.addEventListener("keydown", (e) => { if (e.key === "Enter") pickBookmark(b.question); });
+      item.addEventListener("keydown", (e) => {
+        if (e.target !== item || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        pickBookmark(b.question);
+      });
       list.appendChild(item);
     });
   });
@@ -1001,8 +1042,10 @@ async function ask(question) {
       for (const part of parts) {
         const line = part.split("\n").find(l => l.startsWith("data: "));
         if (!line) continue;
-        const ev = JSON.parse(line.slice(6));
-        if (ev.type === "done" || !current()) continue;
+        if (!current()) continue;
+        const ev = QF.parseSseEvent(line);
+        if (!ev) { addActivity("error", "Skipped a malformed event from the server"); continue; }
+        if (ev.type === "done") continue;
         handleEvent(ev);
       }
     }
@@ -1064,7 +1107,8 @@ function boot() {
     flashButton(e.currentTarget, "Copied ✓");
   });
   $("csv").addEventListener("click", (e) => {
-    const blob = new Blob([QF.toCsv(table.columns, sortedRows())], { type: "text/csv" });
+    // The BOM makes Excel on Windows read the file as UTF-8.
+    const blob = new Blob(["\ufeff" + QF.toCsv(table.columns, sortedRows())], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "queryforge-results.csv";
@@ -1079,6 +1123,13 @@ function boot() {
   else setSidebar(window.matchMedia("(max-width: 1099px)").matches ? "collapsed" : "open", false);
   renderSidebar();
   $("bm-search").addEventListener("input", renderSidebar);
+  // Crossing a breakpoint while resizing: close temporary drawers/overlays, restore the saved desktop state.
+  window.matchMedia("(min-width: 900px) and (max-width: 1099px)").addEventListener("change", (e) => {
+    if (e.matches) { setSidebar("collapsed", false); return; }
+    const saved = QF.store.get("qf.sidebar", "open");
+    setSidebar(saved === "collapsed" ? "collapsed" : "open", false);
+  });
+  window.matchMedia("(max-width: 899px)").addEventListener("change", (e) => { if (!e.matches) closeDrawer(); });
   $("sidebar-toggle").addEventListener("click", toggleSidebar);
   $("sidebar-backdrop").addEventListener("click", closeDrawer);
   $("header-menu").addEventListener("click", (e) => {
