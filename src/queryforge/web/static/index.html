@@ -102,6 +102,21 @@
   .trunc { padding: 7px 12px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; border-bottom: 1px solid var(--divider); }
   .tablewrap { overflow: auto; max-height: 420px; }
   table.grid { border-collapse: collapse; width: max-content; min-width: 100%; }
+  .grid th { text-align: left; font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 8px 12px; border-bottom: 2px solid var(--divider); white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1; cursor: pointer; user-select: none; }
+  .grid th:hover { color: var(--text); }
+  .grid th .arr { color: var(--accent); margin-left: 4px; font-size: 10px; }
+  .grid td { padding: 7px 12px; border-bottom: 1px solid var(--divider); font-size: 13px; white-space: nowrap; max-width: 480px; overflow: hidden; text-overflow: ellipsis; }
+  .grid tr:hover td { background: var(--hover); }
+  .grid .n { text-align: right; font-variant-numeric: tabular-nums; }
+  .grid td.m { color: var(--accent); font-family: var(--mono); font-size: 12.5px; cursor: copy; }
+  .grid td.m:hover { text-decoration: underline dotted; }
+  .grid td.null { color: var(--faint); }
+  .grid .stick { position: sticky; left: 0; background: var(--surface); z-index: 2; box-shadow: 1px 0 0 var(--divider); }
+  .grid th.stick { z-index: 3; }
+  .grid tr:hover td.stick { background: var(--hover); }
+  .grid .bar { display: inline-block; height: 4px; background: var(--hot); border-radius: 2px; vertical-align: middle; margin-right: 8px; opacity: .75; }
+  .skel { display: inline-block; height: 10px; border-radius: 3px; background: var(--skel); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
 
   /* Activity */
   details > summary { list-style: none; cursor: pointer; user-select: none; }
@@ -414,6 +429,10 @@ async function loadSession() {
   }
 }
 
+// --- results, SQL and answer panels ---
+const currentRun = { startedAt: 0, sqlAt: null, controller: null, timer: null, sawAnswer: false, lastToolError: null };
+let table = { columns: [], rows: [], sortCol: -1, sortDir: -1 };
+
 function logLine(text, cls = "") {
   const el = document.createElement("div");
   el.className = "line " + cls;
@@ -422,16 +441,111 @@ function logLine(text, cls = "") {
   $("activity").scrollTop = $("activity").scrollHeight;
 }
 
+function toast(message) {
+  const t = $("toast");
+  t.textContent = message;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 1400);
+}
+
+function flashButton(btn, label) {
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+  btn.textContent = label;
+  btn.classList.add("done");
+  clearTimeout(btn.flashTimer);
+  btn.flashTimer = setTimeout(() => { btn.textContent = btn.dataset.label; btn.classList.remove("done"); }, 1400);
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { return false; }
+}
+
 function renderTable(columns, rows) {
+  table = { columns, rows, sortCol: -1, sortDir: -1 };
+  drawTable();
+}
+
+function sortTable(col) {
+  table.sortDir = table.sortCol === col ? -table.sortDir : -1;
+  table.sortCol = col;
+  drawTable();
+}
+
+function sortedRows() {
+  return table.sortCol < 0 ? table.rows : QF.sortRows(table.rows, table.sortCol, table.sortDir);
+}
+
+function drawTable() {
+  const { columns } = table;
+  const rows = sortedRows();
+  const numeric = columns.map((_, i) => table.rows.some(r => typeof r[i] === "number"));
+  const barMax = columns.map((c, i) => QF.isElapsedColumn(c)
+    ? Math.max(0, ...table.rows.map(r => typeof r[i] === "number" ? r[i] : 0)) : 0);
   const t = $("result");
   t.innerHTML = "";
-  const thead = t.createTHead().insertRow();
-  columns.forEach(c => { const th = document.createElement("th"); th.textContent = c; thead.appendChild(th); });
-  const tbody = t.createTBody();
-  rows.forEach(r => {
-    const tr = tbody.insertRow();
-    r.forEach(v => { const td = tr.insertCell(); td.textContent = v === null ? "∅" : String(v); });
+  const head = t.createTHead().insertRow();
+  columns.forEach((c, i) => {
+    const th = document.createElement("th");
+    th.textContent = c;
+    if (numeric[i]) th.classList.add("n");
+    if (i === 0) th.classList.add("stick");
+    if (i === table.sortCol) {
+      const arr = document.createElement("span");
+      arr.className = "arr";
+      arr.textContent = table.sortDir < 0 ? "▼" : "▲";
+      th.appendChild(arr);
+    }
+    th.addEventListener("click", () => sortTable(i));
+    head.appendChild(th);
   });
+  const body = t.createTBody();
+  rows.forEach(r => {
+    const tr = body.insertRow();
+    r.forEach((v, i) => {
+      const td = tr.insertCell();
+      const col = columns[i];
+      if (i === 0) td.classList.add("stick");
+      if (numeric[i]) td.classList.add("n");
+      if (v === null || v === undefined) {
+        td.classList.add("null");
+      } else if (QF.isCopyColumn(col)) {
+        td.classList.add("m");
+        td.title = "Click to copy";
+        td.addEventListener("click", async () => { await copyText(String(v)); toast("Copied " + v); });
+      } else if (barMax[i] > 0 && typeof v === "number") {
+        const bar = document.createElement("span");
+        bar.className = "bar";
+        bar.style.width = Math.max(4, Math.round(v / barMax[i] * 80)) + "px";
+        td.appendChild(bar);
+      }
+      const text = QF.formatCell(v, col);
+      if (text.length > 60 && !td.title) td.title = text;
+      td.appendChild(document.createTextNode(text));
+    });
+  });
+}
+
+function showResult(ev) {
+  renderTable(ev.columns, ev.rows);
+  const now = Date.now();
+  const secs = (now - (currentRun.sqlAt || currentRun.startedAt)) / 1000;
+  const n = ev.row_count, m = ev.columns.length;
+  $("result-meta").textContent = n + " row" + (n === 1 ? "" : "s") + " · " + m + " column" + (m === 1 ? "" : "s") +
+    " · " + secs.toFixed(1) + " s · Ran " + new Date(now).toTimeString().slice(0, 8) +
+    (session ? " on " + session.database : "");
+  $("trunc").textContent = "Showing the first " + n + " rows. The result was truncated; narrow the question to see the rest.";
+  $("trunc").classList.toggle("hidden", !ev.truncated);
+  $("result-sec").classList.remove("hidden");
+}
+
+function showNotice(kind, title, message) {
+  const box = document.createElement("div");
+  box.className = "notice " + kind;
+  const b = document.createElement("b");
+  b.textContent = title;
+  box.append(b, document.createTextNode(message));
+  $("answer").replaceChildren(box);
 }
 
 function handleEvent(ev) {
@@ -441,19 +555,29 @@ function handleEvent(ev) {
     case "assistant_text":logLine(ev.text); break;
     case "tool_call":     logLine("→ " + ev.name + "(" + JSON.stringify(ev.input).slice(0, 160) + ")", "tool"); break;
     case "sql":
+      currentRun.sqlAt = Date.now();
       $("sql").textContent = ev.sql;
       break;
-    case "result":
-      renderTable(ev.columns, ev.rows);
-      $("result-meta").textContent =
-        ev.row_count + " row" + (ev.row_count === 1 ? "" : "s") + (ev.truncated ? " (truncated)" : "");
-      $("result-sec").classList.remove("hidden");
+    case "result":        showResult(ev); break;
+    case "tool_error":
+      currentRun.lastToolError = ev.message;
+      logLine("⚠ " + ev.name + ": " + ev.message, "err");
       break;
-    case "tool_error":    logLine("⚠ " + ev.name + ": " + ev.message, "err"); break;
     case "answer":
+      currentRun.sawAnswer = true;
       $("answer").textContent = ev.text || "(no answer)";
       break;
-    case "error":         logLine("error: " + ev.message, "err"); break;
+    case "error":
+      showNotice("err", "Query failed", ev.message);
+      logLine("error: " + ev.message, "err");
+      break;
+  }
+}
+
+// A run that ends with a tool error and no answer is a failure the user must see.
+function finishRun() {
+  if (!currentRun.sawAnswer && currentRun.lastToolError && !$("answer").querySelector(".notice")) {
+    showNotice("err", "Query failed", currentRun.lastToolError);
   }
 }
 
@@ -465,6 +589,7 @@ async function ask(question) {
   $("sql").textContent = "";
   $("activity").innerHTML = "";
   $("ask").disabled = true;
+  Object.assign(currentRun, { startedAt: Date.now(), sqlAt: null, sawAnswer: false, lastToolError: null });
 
   try {
     const resp = await fetch("/query", {
@@ -497,6 +622,7 @@ async function ask(question) {
   } catch (e) {
     logLine("request failed: " + e, "err");
   } finally {
+    finishRun();
     $("ask").disabled = false;
   }
 }
@@ -537,6 +663,24 @@ function boot() {
     $("panels").classList.add("hidden");
     $("activity").innerHTML = "";
     showLogin();
+  });
+
+  $("copy-sql").addEventListener("click", async (e) => {
+    await copyText($("sql").textContent);
+    flashButton(e.currentTarget, "Copied ✓");
+  });
+  $("csv").addEventListener("click", (e) => {
+    const blob = new Blob([QF.toCsv(table.columns, sortedRows())], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "queryforge-results.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    flashButton(e.currentTarget, "Downloaded ✓");
+  });
+  $("rerun").addEventListener("click", () => {
+    const q = $("q").value.trim();
+    if (q) ask(q);
   });
 
   $("form").addEventListener("submit", (e) => {
