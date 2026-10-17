@@ -68,7 +68,15 @@ def test_format_cell_null_and_numbers():
 def test_format_cell_keeps_id_columns_raw():
     assert qf('QF.formatCell(3912874411, "PLAN_HASH_VALUE")') == "3912874411"
     assert qf('QF.isCopyColumn("SQL_ID") && QF.isCopyColumn("plan_hash_value")') is True
-    assert qf('QF.isCopyColumn("SID")') is False
+    assert qf('QF.isCopyColumn("EXECUTIONS")') is False
+
+
+def test_oracle_identifier_columns_are_raw_and_copyable():
+    for col in ["HASH_VALUE", "OLD_HASH_VALUE", "DBID", "FORCE_MATCHING_SIGNATURE",
+                "EXACT_MATCHING_SIGNATURE", "SID", "SERIAL#", "SQL_EXEC_ID"]:
+        assert qf(f'QF.isCopyColumn("{col}")') is True, col
+    assert qf('QF.formatCell(3912874411, "HASH_VALUE")') == "3912874411"
+    assert qf('QF.formatCell(1234567890, "dbid")') == "1234567890"
 
 
 def test_elapsed_column_detection():

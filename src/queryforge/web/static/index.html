@@ -353,7 +353,9 @@
 const QF = {};
 
 // --- results ---
-QF.isCopyColumn = (name) => /(^|_)ID$/i.test(name) || /PLAN_HASH/i.test(name);
+// Identifiers a performance engineer pastes elsewhere: shown raw (no separators) and click-to-copy.
+QF.isCopyColumn = (name) =>
+  /(^|_)ID$/i.test(name) || /HASH/i.test(name) || /SIGNATURE$/i.test(name) || /^(DBID|SID|SERIAL#?)$/i.test(name);
 QF.isElapsedColumn = (name) => /^ELAPSED/i.test(name);
 
 QF.formatCell = (value, column) => {
@@ -971,8 +973,20 @@ async function ask(question) {
     if (resp.status === 401) {
       currentRun.controller = null;
       setRunning(false);
+      $("panels").classList.add("hidden");
+      $("activity").replaceChildren();
       showLogin();
       showLoginError("Not connected — log in again.");
+      return;
+    }
+    if (!resp.ok) {
+      let detail = resp.status + " " + resp.statusText;
+      try {
+        const body = await resp.json();
+        if (typeof body.detail === "string") detail = body.detail;
+      } catch (e) { /* not JSON; keep the status line */ }
+      showNotice("err", "Query failed", "Server returned " + resp.status + ": " + detail);
+      addActivity("error", "HTTP " + resp.status);
       return;
     }
     const reader = resp.body.getReader();
