@@ -218,3 +218,39 @@ def test_dark_theme_is_applied_before_the_page_paints():
     html = page_html()
     head = html.split("<body", 1)[0]
     assert "qf.theme" in head and "dataset.theme" in head
+
+
+def test_markdown_inline_bold_italic_code():
+    assert qf('QF.parseInline("a **B** *c* `d_e` f")') == [
+        {"t": "text", "v": "a "}, {"t": "b", "v": "B"}, {"t": "text", "v": " "},
+        {"t": "i", "v": "c"}, {"t": "text", "v": " "}, {"t": "code", "v": "d_e"}, {"t": "text", "v": " f"},
+    ]
+
+
+def test_markdown_leaves_identifiers_and_stray_stars_alone():
+    # Oracle names use underscores and $; a lone * (SELECT *) or a * b is not emphasis.
+    assert qf('QF.parseInline("V$SQL_PLAN and SELECT * FROM t and 2 * 3")') == [
+        {"t": "text", "v": "V$SQL_PLAN and SELECT * FROM t and 2 * 3"}
+    ]
+
+
+def test_markdown_numbered_list_from_the_screenshot():
+    md = "The database contains two tables:\\n1. **DEPARTMENTS**: Company departments.\\n2. **EMPLOYEES**: Employees."
+    blocks = qf(f'QF.parseMarkdown("{md}")')
+    assert blocks[0] == {"type": "p", "lines": [[{"t": "text", "v": "The database contains two tables:"}]]}
+    assert blocks[1]["type"] == "ol" and blocks[1]["start"] == 1 and len(blocks[1]["items"]) == 2
+    assert blocks[1]["items"][0][0] == {"t": "b", "v": "DEPARTMENTS"}
+
+
+def test_markdown_bullets_headings_paragraphs_and_fences():
+    md = "## Top SQL\\n\\n- a\\n* b\\n\\nline one\\nline two\\n\\n```sql\\nSELECT *\\nFROM v$sql\\n```"
+    blocks = qf(f'QF.parseMarkdown("{md}")')
+    assert [b["type"] for b in blocks] == ["h", "ul", "p", "pre"]
+    assert blocks[0]["lines"] == [[{"t": "text", "v": "Top SQL"}]]
+    assert len(blocks[1]["items"]) == 2
+    assert len(blocks[2]["lines"]) == 2
+    assert blocks[3]["text"] == "SELECT *\nFROM v$sql"
+
+
+def test_markdown_unclosed_fence_keeps_the_text():
+    assert qf('QF.parseMarkdown("```\\nSELECT 1")') == [{"type": "pre", "text": "SELECT 1"}]
