@@ -1,148 +1,228 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>QueryForge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #e6e9ef;
-    --muted: #9aa4b2; --accent: #6aa9ff; --error: #ff7a7a; --ok: #5fd08a;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #f4f5f7; --surface: #ffffff; --surface-2: #fafbfc; --border: #dfe1e6; --divider: #ebecf0;
+    --text: #172b4d; --text-2: #42526e; --muted: #6b778c; --faint: #a5adba;
+    --accent: #0052cc; --accent-soft: #deebff; --accent-text: #0747a6; --focus: #4c9aff; --on-accent: #ffffff;
+    --star: #ffab00; --hot: #de350b;
+    --ok-bg: #e3fcef; --ok: #006644; --warn-bg: #fff7d6; --warn: #974f0c;
+    --err-bg: #ffebe6; --err: #bf2600; --err-border: #ffbdad;
+    --hover: #f4f5f7; --skel: #ebecf0; --toast-bg: #172b4d; --toast-text: #ffffff;
+    --shadow: 0 4px 12px rgba(9, 30, 66, .12);
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  [data-theme="dark"] {
+    --bg: #0e1116; --surface: #161a21; --surface-2: #12161c; --border: #262c36; --divider: #1f242d;
+    --text: #e6e9ee; --text-2: #b3bac5; --muted: #8590a0; --faint: #566070;
+    --accent: #579dff; --accent-soft: #1c2b42; --accent-text: #85b8ff; --focus: #579dff; --on-accent: #0b1a33;
+    --star: #f5b73b; --hot: #f87168;
+    --ok-bg: #12301f; --ok: #4bce97; --warn-bg: #33290f; --warn: #e2b203;
+    --err-bg: #3a1a14; --err: #fd9891; --err-border: #5d2a20;
+    --hover: #1c212a; --skel: #222833; --toast-bg: #e6e9ee; --toast-text: #0e1116;
+    --shadow: 0 4px 16px rgba(0, 0, 0, .5);
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font: 13.5px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
   }
-  header {
-    padding: 20px 24px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  button, input, select { font-family: var(--sans); }
+  button { cursor: pointer; }
+  code, pre, .mono { font-family: var(--mono); }
+  .hidden { display: none !important; }
+
+  /* Header */
+  .hdr { display: flex; align-items: center; height: 46px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; position: sticky; top: 0; z-index: 20; }
+  .brandbox { display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 100%; border-right: 1px solid var(--divider); width: 240px; flex-shrink: 0; }
+  .brand { font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+  .iconbtn { width: 32px; height: 32px; border-radius: 4px; border: 0; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .iconbtn:hover { background: var(--hover); color: var(--text); }
+  .kv { display: flex; gap: 22px; color: var(--muted); padding-left: 18px; min-width: 0; }
+  .kv span { white-space: nowrap; }
+  .kv b { color: var(--text); font-weight: 500; margin-left: 6px; font-family: var(--mono); font-size: 12.5px; }
+  .hdr-right { margin-left: auto; display: flex; gap: 8px; padding-right: 12px; align-items: center; }
+  .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; letter-spacing: .03em; white-space: nowrap; }
+  .tag.g { background: var(--ok-bg); color: var(--ok); }
+  .tag.y { background: var(--warn-bg); color: var(--warn); }
+  .tag.r { background: var(--err-bg); color: var(--err); cursor: help; }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); font-size: 12.5px; }
+  .linkbtn:hover { text-decoration: underline; }
+  .linkbtn.done { color: var(--ok); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 4px 10px; }
+  .seg button.on { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+  .quiet { color: var(--muted); background: none; border: 0; font-size: 13px; padding: 4px 6px; }
+  .quiet:hover { color: var(--text); }
+
+  /* Shell + sidebar */
+  .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: calc(100vh - 46px); }
+  .side { background: var(--surface); border-right: 1px solid var(--border); padding: 12px 10px; font-size: 13px; overflow: hidden auto; }
+
+  /* Main */
+  .main { padding: 16px 18px 28px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .ask { display: flex; gap: 8px; }
+  .ask .t { flex: 1; min-width: 0; background: var(--surface); border: 2px solid var(--border); border-radius: 4px; padding: 0 6px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .ask .t:focus-within { border-color: var(--focus); }
+  .ask input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 14px; padding: 8px 0; }
+  .ask input::placeholder { color: var(--faint); }
+  .ask .hint { font-family: var(--mono); font-size: 11px; color: var(--faint); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; }
+  .ask .star { color: var(--faint); font-size: 17px; background: none; border: 0; width: 32px; height: 32px; }
+  .ask .star.on { color: var(--star); }
+  .run { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 4px; padding: 0 16px; font-weight: 600; font-size: 13.5px; min-width: 132px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .run:disabled { opacity: .7; cursor: default; }
+  .run .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .stop { background: var(--surface); color: var(--err); border: 1px solid var(--err-border); border-radius: 4px; padding: 0 12px; font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+  .stop .k { font-family: var(--mono); font-size: 11px; border: 1px solid var(--err-border); border-radius: 3px; padding: 0 4px; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .pan { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; min-width: 0; }
+  .ph { display: flex; align-items: center; flex-wrap: wrap; min-height: 34px; padding: 4px 12px; border-bottom: 1px solid var(--divider); font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; gap: 4px 8px; }
+  .ph .r { margin-left: auto; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+  .answer { padding: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { color: var(--faint); }
+  .notice { padding: 10px 12px; border-radius: 4px; border: 1px solid; font-size: 13.5px; white-space: normal; }
+  .notice b { display: block; margin-bottom: 2px; }
+  .notice.err { background: var(--err-bg); border-color: var(--err-border); }
+  .notice.err b { color: var(--err); }
+  .notice.warn { background: var(--warn-bg); border-color: var(--warn-bg); }
+  .notice.warn b { color: var(--warn); }
+  pre.sql { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; font-size: 12.5px; line-height: 1.6; background: var(--surface-2); color: var(--text); min-height: 100px; border-radius: 0 0 4px 4px; }
+
+  /* Results */
+  .trunc { padding: 7px 12px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; border-bottom: 1px solid var(--divider); }
+  .tablewrap { overflow: auto; max-height: 420px; }
+  table.grid { border-collapse: collapse; width: max-content; min-width: 100%; }
+
+  /* Activity */
+  details > summary { list-style: none; cursor: pointer; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  .chev { display: inline-block; transition: transform .15s; font-size: 9px; width: 10px; color: var(--muted); }
+  details[open] > summary .chev { transform: rotate(90deg); }
+  .act > summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; }
+  .act > summary .live { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--accent); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .act > summary .r { margin-left: auto; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; white-space: nowrap; }
+  .log { border-top: 1px solid var(--divider); padding: 8px 0; font-size: 12px; font-family: var(--mono); max-height: 320px; overflow: auto; }
+  .log .line { display: grid; grid-template-columns: 64px 52px minmax(0, 1fr); gap: 10px; padding: 2px 12px; color: var(--text-2); }
+  .log .line > span:last-child { overflow-wrap: anywhere; }
+  .log .ts { color: var(--faint); }
+  .log .k-think { color: var(--muted); font-style: italic; }
+  .log .k-tool { color: var(--accent); }
+  .log .k-error, .log .k-stop { color: var(--err); }
+
+  /* Login */
+  .login-wrap { display: flex; justify-content: center; padding: 56px 16px; }
+  .login { width: 100%; max-width: 420px; padding: 20px; }
+  .login h2 { margin: 0 0 14px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; }
+  #login-form { display: flex; flex-direction: column; gap: 14px; }
+  #login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  #login-form select, #login-form input {
+    padding: 9px 12px; background: var(--surface); color: var(--text);
+    border: 2px solid var(--border); border-radius: 4px; font-size: 14px; outline: none;
   }
-  header .titles { flex: 1; min-width: 0; }
-  header h1 { margin: 0; font-size: 18px; letter-spacing: .3px; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-  /* Database target switch */
-  #db-switch {
-    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 8px 12px;
-  }
-  #db-dot {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
-    flex-shrink: 0; transition: background .2s;
-  }
-  #db-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(95,208,138,.15); }
-  #db-dot.bad { background: var(--error); box-shadow: 0 0 0 3px rgba(255,122,122,.15); }
-  #db-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
-  #db-label b { color: var(--text); font-weight: 600; }
-  #db-switch.hidden { display: none; }
-  #logout {
-    padding: 6px 12px; font-size: 13px; border-radius: 8px;
-    background: transparent; color: var(--accent); border: 1px solid var(--border);
-  }
-  #logout:hover { border-color: var(--accent); }
-  /* Login card */
-  #login-sec { display: flex; justify-content: center; margin-top: 48px; }
-  #login-sec.hidden { display: none; }
-  .login { width: 100%; max-width: 420px; }
-  #login-form { flex-direction: column; gap: 14px; }
-  #login-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
-  select, input[type=password] {
-    padding: 10px 12px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px; font-size: 15px; outline: none;
-  }
-  select:focus, input[type=password]:focus { border-color: var(--accent); }
-  .login-error { color: var(--error); font-size: 13px; }
-  main { max-width: 980px; margin: 0 auto; padding: 24px; }
-  form { display: flex; gap: 10px; }
-  input[type=text] {
-    flex: 1; padding: 12px 14px; background: var(--panel); color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px; font-size: 15px; outline: none;
-  }
-  input[type=text]:focus { border-color: var(--accent); }
-  button {
-    padding: 12px 18px; background: var(--accent); color: #08203f; border: 0;
-    border-radius: 10px; font-weight: 600; cursor: pointer;
-  }
-  button:disabled { opacity: .5; cursor: default; }
-  .examples { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
-  .examples a { color: var(--accent); cursor: pointer; text-decoration: none; margin-right: 14px; }
-  section { margin-top: 22px; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 8px; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-  #activity .line { font-family: var(--mono); font-size: 13px; color: var(--muted); padding: 2px 0; }
-  #activity .line.thinking { color: #b79bff; }
-  #activity .line.tool { color: var(--accent); }
-  #activity .line.err { color: var(--error); }
-  pre.sql { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; margin: 0; color: #d7e3ff; }
-  .answer { font-size: 16px; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
-  th { background: #1d212b; position: sticky; top: 0; }
-  .tablewrap { overflow: auto; max-height: 440px; border-radius: 10px; }
-  .badge { display: inline-block; font-size: 12px; color: var(--muted); margin-left: 8px; }
-  .hidden { display: none; }
+  #login-form select:focus, #login-form input:focus { border-color: var(--focus); }
+  .login-error { color: var(--err); font-size: 13px; }
+  #login-btn { background: var(--accent); color: var(--on-accent); border: 0; border-radius: 4px; padding: 10px; font-weight: 600; font-size: 14px; }
+  #login-btn:disabled { opacity: .6; cursor: default; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(10px); background: var(--toast-bg); color: var(--toast-text); font-size: 12.5px; padding: 7px 14px; border-radius: 4px; opacity: 0; transition: opacity .18s, transform .18s; pointer-events: none; z-index: 50; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
 </style>
 </head>
 <body>
-<header>
-  <div class="titles">
-    <h1>QueryForge</h1>
-    <p>Ask a question in plain English — it queries your Oracle database (read-only) and shows the result.</p>
+<header class="hdr">
+  <div class="brandbox">
+    <button id="sidebar-toggle" class="iconbtn hidden" type="button" title="Toggle saved queries" aria-label="Toggle saved queries">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><line x1="6" y1="3" x2="6" y2="13"/></svg>
+    </button>
+    <span class="brand">QueryForge</span>
   </div>
-  <div id="db-switch" class="hidden">
-    <span id="db-dot" title="checking…"></span>
-    <span id="db-label"><b id="db-user">…</b> @ <b id="db-name">…</b></span>
-    <button id="logout" type="button">Log out</button>
+  <div id="session-info" class="kv hidden">
+    <span><span class="lbl">Database</span><b id="db-name">…</b></span>
+    <span><span class="lbl">User</span><b id="db-user">…</b></span>
+  </div>
+  <div class="hdr-right">
+    <span id="conn" class="tag g hidden">● CONNECTED</span>
+    <button id="reconnect" class="linkbtn hidden" type="button">Reconnect</button>
+    <span id="ro-tag" class="tag y hidden">READ-ONLY</span>
+    <div class="seg" role="group" aria-label="Theme">
+      <button id="theme-light" type="button" class="on">Light</button>
+      <button id="theme-dark" type="button">Dark</button>
+    </div>
+    <button id="logout" class="quiet hidden" type="button">Log out</button>
   </div>
 </header>
-<main>
-  <section id="login-sec" class="hidden">
-    <div class="panel login">
-      <h2>Connect to a database</h2>
-      <form id="login-form">
-        <label>Database <select id="login-db"></select></label>
-        <label>User <select id="login-user"></select></label>
-        <label>Password <input id="login-pw" type="password" autocomplete="current-password" /></label>
-        <div id="login-error" class="login-error hidden"></div>
-        <button id="login-btn" type="submit" disabled>Connect</button>
-      </form>
+
+<section id="login-sec" class="login-wrap hidden">
+  <div class="pan login">
+    <h2>Connect to a database</h2>
+    <form id="login-form">
+      <label>Database <select id="login-db"></select></label>
+      <label>User <select id="login-user"></select></label>
+      <label>Password <input id="login-pw" type="password" autocomplete="current-password" /></label>
+      <div id="login-error" class="login-error hidden"></div>
+      <button id="login-btn" type="submit" disabled>Connect</button>
+    </form>
+  </div>
+</section>
+
+<div id="app" class="shell hidden">
+  <aside id="sidebar" class="side" aria-label="Saved queries"></aside>
+
+  <main class="main">
+    <form id="form" class="ask">
+      <div class="t">
+        <input id="q" type="text" placeholder="Ask about SQL performance, waits, plans…" autocomplete="off" aria-label="Question" />
+        <span class="hint" id="khint">⌘K</span>
+        <button id="star" class="star" type="button" title="Save this question" aria-label="Save this question">★</button>
+      </div>
+      <button id="ask" class="run" type="submit">Run</button>
+      <button id="stop" class="stop hidden" type="button">Stop <span class="k">Esc</span></button>
+    </form>
+
+    <div id="panels" class="hidden">
+      <div class="two">
+        <section class="pan">
+          <div class="ph">Answer</div>
+          <div id="answer" class="answer"></div>
+        </section>
+        <section class="pan">
+          <div class="ph">Generated SQL <span class="r"><button id="copy-sql" class="linkbtn" type="button">Copy</button></span></div>
+          <pre id="sql" class="sql"></pre>
+        </section>
+      </div>
+
+      <section id="result-sec" class="pan hidden" style="margin-top:12px">
+        <div class="ph">Results
+          <span class="r">
+            <span id="result-meta"></span>
+            <button id="rerun" class="linkbtn" type="button" title="Run the same question again">↻ Re-run</button>
+            <button id="csv" class="linkbtn" type="button">Export CSV</button>
+          </span>
+        </div>
+        <div id="trunc" class="trunc hidden"></div>
+        <div class="tablewrap"><table id="result" class="grid"></table></div>
+      </section>
+
+      <details id="activity-sec" class="pan act" style="margin-top:12px">
+        <summary><span class="chev">▶</span>Activity <span class="live" id="activity-live"></span><span class="r" id="activity-meta"></span></summary>
+        <div id="activity" class="log"></div>
+      </details>
     </div>
-  </section>
+  </main>
+</div>
 
-  <div id="app" class="hidden">
-  <form id="form">
-    <input id="q" type="text" placeholder="e.g. How many orders were placed last month?" autocomplete="off" />
-    <button id="ask" type="submit">Ask</button>
-  </form>
-  <div class="examples">
-    Try:
-    <a data-q="List all tables and what they contain.">list tables</a>
-    <a data-q="How many rows are in each table?">row counts</a>
-  </div>
-
-  <section id="answer-sec" class="hidden">
-    <h2>Answer</h2>
-    <div class="panel answer" id="answer"></div>
-  </section>
-
-  <section id="sql-sec" class="hidden">
-    <h2>Generated SQL</h2>
-    <div class="panel"><pre class="sql" id="sql"></pre></div>
-  </section>
-
-  <section id="result-sec" class="hidden">
-    <h2>Results <span class="badge" id="result-meta"></span></h2>
-    <div class="tablewrap panel" style="padding:0"><table id="result"></table></div>
-  </section>
-
-  <section id="activity-sec">
-    <h2>Activity</h2>
-    <div class="panel" id="activity"></div>
-  </section>
-  </div>
-</main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
 // Pure helpers live on QF so tests can run them in Node; DOM code runs only in a browser.
@@ -295,22 +375,34 @@ async function loadDatabases() {
   }
 }
 
+const SESSION_CHROME = ["app", "session-info", "conn", "ro-tag", "logout", "sidebar-toggle"];
+let session = null;
+
 function showLogin() {
-  $("app").classList.add("hidden");
-  $("db-switch").classList.add("hidden");
+  session = null;
+  SESSION_CHROME.forEach(id => $(id).classList.add("hidden"));
+  $("reconnect").classList.add("hidden");
   $("login-sec").classList.remove("hidden");
   loadDatabases().then(() => $("login-pw").focus());
 }
 
 function showApp(s) {
+  session = s;
   $("login-sec").classList.add("hidden");
-  $("app").classList.remove("hidden");
-  $("db-switch").classList.remove("hidden");
+  SESSION_CHROME.forEach(id => $(id).classList.remove("hidden"));
   $("db-user").textContent = s.user;
   $("db-name").textContent = s.database;
-  $("db-dot").className = s.reachable ? "ok" : "bad";
-  $("db-dot").title = s.detail || "";
+  $("conn").className = "tag " + (s.reachable ? "g" : "r");
+  $("conn").textContent = s.reachable ? "● CONNECTED" : "● DISCONNECTED";
+  $("conn").title = s.reachable ? "" : (s.detail || "");
   $("q").focus();
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("theme-light").classList.toggle("on", theme === "light");
+  $("theme-dark").classList.toggle("on", theme === "dark");
+  QF.store.set("qf.theme", theme);
 }
 
 async function loadSession() {
@@ -350,7 +442,6 @@ function handleEvent(ev) {
     case "tool_call":     logLine("→ " + ev.name + "(" + JSON.stringify(ev.input).slice(0, 160) + ")", "tool"); break;
     case "sql":
       $("sql").textContent = ev.sql;
-      $("sql-sec").classList.remove("hidden");
       break;
     case "result":
       renderTable(ev.columns, ev.rows);
@@ -361,7 +452,6 @@ function handleEvent(ev) {
     case "tool_error":    logLine("⚠ " + ev.name + ": " + ev.message, "err"); break;
     case "answer":
       $("answer").textContent = ev.text || "(no answer)";
-      $("answer-sec").classList.remove("hidden");
       break;
     case "error":         logLine("error: " + ev.message, "err"); break;
   }
@@ -369,7 +459,10 @@ function handleEvent(ev) {
 
 async function ask(question) {
   // reset
-  ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
+  $("panels").classList.remove("hidden");
+  $("result-sec").classList.add("hidden");
+  $("answer").textContent = "";
+  $("sql").textContent = "";
   $("activity").innerHTML = "";
   $("ask").disabled = true;
 
@@ -409,8 +502,9 @@ async function ask(question) {
 }
 
 function boot() {
-  document.querySelectorAll(".examples a").forEach(a =>
-    a.addEventListener("click", () => { $("q").value = a.dataset.q; $("q").focus(); }));
+  setTheme(QF.store.get("qf.theme", "light") === "dark" ? "dark" : "light");
+  $("theme-light").addEventListener("click", () => setTheme("light"));
+  $("theme-dark").addEventListener("click", () => setTheme("dark"));
 
   $("login-db").addEventListener("change", fillUsers);
 
@@ -440,7 +534,7 @@ function boot() {
 
   $("logout").addEventListener("click", async () => {
     try { await fetch("/logout", { method: "POST" }); } catch (e) { /* show login regardless */ }
-    ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
+    $("panels").classList.add("hidden");
     $("activity").innerHTML = "";
     showLogin();
   });

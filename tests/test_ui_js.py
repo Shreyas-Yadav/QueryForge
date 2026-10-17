@@ -158,3 +158,27 @@ def test_group_bookmarks_filters_and_drops_empty_groups():
     out = qf('QF.groupBookmarks([{question:"Top SQL by CPU",group:"Top SQL",lastRun:null},'
              '{question:"Blocking sessions",group:"Waits",lastRun:null}], "cpu")')
     assert out == [{"group": "Top SQL", "items": [{"question": "Top SQL by CPU", "group": "Top SQL", "lastRun": None}]}]
+
+
+def test_page_uses_plex_fonts_and_theme_tokens():
+    html = page_html()
+    assert "fonts.googleapis.com" in html and "IBM+Plex+Sans" in html and "IBM+Plex+Mono" in html
+    assert '[data-theme="dark"]' in html
+
+
+def test_try_examples_row_is_gone():
+    assert 'class="examples"' not in page_html()
+
+
+def test_shell_ids_exist():
+    html = page_html()
+    for i in ["sidebar-toggle", "conn", "reconnect", "theme-light", "theme-dark", "sidebar", "q", "star",
+              "ask", "stop", "answer", "sql", "copy-sql", "result-meta", "rerun", "csv", "trunc",
+              "result", "activity-sec", "activity-live", "activity-meta", "activity", "toast"]:
+        assert f'id="{i}"' in html, i
+
+
+def test_activity_is_collapsed_by_default():
+    html = page_html()
+    tag = html.split('id="activity-sec"', 1)[0].rsplit("<", 1)[1] + html.split('id="activity-sec"', 1)[1].split(">", 1)[0]
+    assert tag.startswith("details") and " open" not in tag
