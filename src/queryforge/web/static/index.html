@@ -67,6 +67,38 @@
   /* Shell + sidebar */
   .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: calc(100vh - 46px); }
   .side { background: var(--surface); border-right: 1px solid var(--border); padding: 12px 10px; font-size: 13px; overflow: hidden auto; }
+  .search { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; color: var(--faint); margin-bottom: 6px; }
+  .search:focus-within { border-color: var(--focus); }
+  .search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 12.5px; padding: 6px 0; }
+  .grp { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 12px 8px 4px; display: flex; justify-content: space-between; }
+  .bm { position: relative; padding: 6px 28px 6px 8px; border-radius: 4px; color: var(--text-2); display: flex; gap: 9px; align-items: flex-start; cursor: pointer; min-height: 36px; width: 100%; border: 0; background: none; text-align: left; font-size: 13px; }
+  .bm:hover { background: var(--hover); }
+  .bm.on { background: var(--accent-soft); color: var(--accent-text); }
+  .bm .s { color: var(--star); font-size: 12px; padding-top: 1px; flex-shrink: 0; }
+  .bm .lbl { min-width: 0; }
+  .bm .q { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bm .meta { display: block; font-size: 11px; color: var(--faint); }
+  .bm.on .meta { color: var(--accent); }
+  .bm .x { position: absolute; right: 2px; top: 4px; width: 26px; height: 26px; border: 0; border-radius: 4px; background: none; color: var(--muted); font-size: 15px; line-height: 1; opacity: 0; }
+  .bm:hover .x, .bm .x:focus { opacity: 1; }
+  .bm .x:hover { background: var(--divider); color: var(--err); }
+  .side .empty-note { color: var(--faint); font-size: 12.5px; padding: 12px 8px; }
+  .shell.collapsed { grid-template-columns: 52px minmax(0, 1fr); }
+  body.in-app.sb-collapsed .brandbox { width: 52px; justify-content: center; padding: 0; }
+  body.in-app.sb-collapsed .brand { display: none; }
+  .collapsed .side { padding: 10px 6px; }
+  .collapsed .search, .collapsed .bm .lbl, .collapsed .bm .x, .collapsed .grp span, .collapsed .empty-note { display: none; }
+  .collapsed .grp { height: 1px; background: var(--divider); padding: 0; margin: 8px 4px; font-size: 0; }
+  .collapsed .bm { justify-content: center; padding: 8px 0; }
+  .collapsed .bm .s { font-size: 14px; }
+  /* Save popover */
+  .ask .t { position: relative; }
+  .pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 260px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .pop label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .pop input { padding: 7px 10px; border: 2px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font-size: 13px; outline: 0; }
+  .pop input:focus { border-color: var(--focus); }
+  .pop-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .pop-actions .run { min-width: 0; min-height: 32px; padding: 0 14px; font-size: 13px; }
 
   /* Main */
   .main { padding: 16px 18px 28px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -192,7 +224,13 @@
 </section>
 
 <div id="app" class="shell hidden">
-  <aside id="sidebar" class="side" aria-label="Saved queries"></aside>
+  <aside id="sidebar" class="side" aria-label="Saved queries">
+    <label class="search">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></svg>
+      <input id="bm-search" type="search" placeholder="Search saved…" autocomplete="off" aria-label="Search saved queries" />
+    </label>
+    <div id="bm-list"></div>
+  </aside>
 
   <main class="main">
     <form id="form" class="ask">
@@ -200,6 +238,14 @@
         <input id="q" type="text" placeholder="Ask about SQL performance, waits, plans…" autocomplete="off" aria-label="Question" />
         <span class="hint" id="khint">⌘K</span>
         <button id="star" class="star" type="button" title="Save this question" aria-label="Save this question">★</button>
+        <div id="save-pop" class="pop hidden" role="dialog" aria-label="Save question">
+          <label>Group <input id="save-group" list="group-list" autocomplete="off" /></label>
+          <datalist id="group-list"></datalist>
+          <div class="pop-actions">
+            <button id="save-cancel" class="quiet" type="button">Cancel</button>
+            <button id="save-ok" class="run" type="button">Save</button>
+          </div>
+        </div>
       </div>
       <button id="ask" class="run" type="submit">Run</button>
       <button id="stop" class="stop hidden" type="button">Stop <span class="k">Esc</span></button>
@@ -395,6 +441,7 @@ let session = null;
 
 function showLogin() {
   session = null;
+  document.body.classList.remove("in-app");
   SESSION_CHROME.forEach(id => $(id).classList.add("hidden"));
   $("reconnect").classList.add("hidden");
   $("login-sec").classList.remove("hidden");
@@ -403,6 +450,7 @@ function showLogin() {
 
 function showApp(s) {
   session = s;
+  document.body.classList.add("in-app");
   $("login-sec").classList.add("hidden");
   SESSION_CHROME.forEach(id => $(id).classList.remove("hidden"));
   $("db-user").textContent = s.user;
@@ -678,8 +726,132 @@ async function reconnect() {
   }
 }
 
-// Called when a run starts; the saved-queries sidebar hooks in here.
-function onRunStart(question) {}
+// --- saved queries sidebar ---
+let bookmarks = [];
+
+function saveBookmarks(list) {
+  bookmarks = list;
+  QF.store.set("qf.bookmarks", list);
+  renderSidebar();
+  updateStar();
+}
+
+function pickBookmark(question) {
+  $("q").value = question;
+  $("q").focus();
+  updateStar();
+  renderSidebar();
+  closeDrawer();
+}
+
+function renderSidebar() {
+  const list = $("bm-list");
+  list.replaceChildren();
+  const groups = QF.groupBookmarks(bookmarks, $("bm-search").value);
+  if (!bookmarks.length) {
+    const note = document.createElement("div");
+    note.className = "empty-note";
+    note.textContent = "No saved queries yet. Click ★ next to a question to save it.";
+    list.appendChild(note);
+    return;
+  }
+  const current = $("q").value.trim();
+  const now = Date.now();
+  groups.forEach(g => {
+    const head = document.createElement("div");
+    head.className = "grp";
+    const count = document.createElement("span");
+    count.textContent = g.items.length;
+    head.append(document.createTextNode(g.group), count);
+    list.appendChild(head);
+    g.items.forEach(b => {
+      const item = document.createElement("div");
+      item.className = "bm" + (b.question === current ? " on" : "");
+      item.title = b.question;
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      const star = document.createElement("span");
+      star.className = "s";
+      star.textContent = "★";
+      const lbl = document.createElement("span");
+      lbl.className = "lbl";
+      const q = document.createElement("span");
+      q.className = "q";
+      q.textContent = b.question;
+      lbl.appendChild(q);
+      if (b.lastRun) {
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = "ran " + QF.relativeTime(b.lastRun, now);
+        lbl.appendChild(meta);
+      }
+      const x = document.createElement("button");
+      x.className = "x";
+      x.type = "button";
+      x.textContent = "×";
+      x.title = "Remove";
+      x.setAttribute("aria-label", "Remove saved query");
+      x.addEventListener("click", (e) => {
+        e.stopPropagation();
+        saveBookmarks(QF.removeBookmark(bookmarks, b.question));
+      });
+      item.append(star, lbl, x);
+      item.addEventListener("click", () => pickBookmark(b.question));
+      item.addEventListener("keydown", (e) => { if (e.key === "Enter") pickBookmark(b.question); });
+      list.appendChild(item);
+    });
+  });
+}
+
+function updateStar() {
+  const saved = bookmarks.some(b => b.question === $("q").value.trim());
+  $("star").classList.toggle("on", saved);
+  $("star").title = saved ? "Saved — click to remove" : "Save this question";
+}
+
+function openSavePop() {
+  const groups = [...new Set(bookmarks.map(b => b.group))];
+  $("group-list").replaceChildren(...groups.map(g => new Option(g)));
+  $("save-group").value = "Saved";
+  $("save-pop").classList.remove("hidden");
+  $("save-group").focus();
+  $("save-group").select();
+}
+
+function closeSavePop() {
+  $("save-pop").classList.add("hidden");
+}
+
+function onStarClick() {
+  const q = $("q").value.trim();
+  if (!q) { $("q").focus(); return; }
+  if (bookmarks.some(b => b.question === q)) {
+    saveBookmarks(QF.removeBookmark(bookmarks, q));
+    toast("Removed from saved queries");
+  } else {
+    openSavePop();
+  }
+}
+
+function confirmSave() {
+  const q = $("q").value.trim();
+  if (q) saveBookmarks(QF.addBookmark(bookmarks, q, $("save-group").value));
+  closeSavePop();
+  $("q").focus();
+}
+
+function setSidebar(state) {
+  $("app").classList.toggle("collapsed", state === "collapsed");
+  document.body.classList.toggle("sb-collapsed", state === "collapsed");
+  QF.store.set("qf.sidebar", state);
+}
+
+function closeDrawer() {}
+
+// Called when a run starts.
+function onRunStart(question) {
+  if (bookmarks.some(b => b.question === question)) saveBookmarks(QF.touchBookmark(bookmarks, question, Date.now()));
+}
 
 async function ask(question) {
   if (disconnected) return;
@@ -799,6 +971,24 @@ function boot() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     flashButton(e.currentTarget, "Downloaded ✓");
   });
+  bookmarks = QF.parseBookmarks(QF.store.get("qf.bookmarks", []));
+  setSidebar(QF.store.get("qf.sidebar", "open") === "collapsed" ? "collapsed" : "open");
+  renderSidebar();
+  $("bm-search").addEventListener("input", renderSidebar);
+  $("sidebar-toggle").addEventListener("click", () =>
+    setSidebar($("app").classList.contains("collapsed") ? "open" : "collapsed"));
+  $("q").addEventListener("input", () => { updateStar(); renderSidebar(); });
+  $("star").addEventListener("click", onStarClick);
+  $("save-ok").addEventListener("click", confirmSave);
+  $("save-cancel").addEventListener("click", closeSavePop);
+  $("save-group").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); confirmSave(); }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSavePop(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("save-pop").classList.contains("hidden") && !e.target.closest("#save-pop, #star")) closeSavePop();
+  });
+
   $("stop").addEventListener("click", stopRun);
   $("reconnect").addEventListener("click", reconnect);
 
