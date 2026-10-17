@@ -145,42 +145,38 @@
 </main>
 
 <script>
-const $ = (id) => document.getElementById(id);
-const form = $("form"), qInput = $("q"), askBtn = $("ask");
+// Pure helpers live on QF so tests can run them in Node; DOM code runs only in a browser.
+const QF = {};
 
-document.querySelectorAll(".examples a").forEach(a =>
-  a.addEventListener("click", () => { qInput.value = a.dataset.q; qInput.focus(); }));
+const $ = (id) => document.getElementById(id);
 
 // --- login / session ---
-const dbDot = $("db-dot"), dbName = $("db-name"), dbUser = $("db-user");
-const loginDb = $("login-db"), loginUser = $("login-user"), loginPw = $("login-pw"),
-      loginBtn = $("login-btn"), loginError = $("login-error");
 let databases = [];
 
 function showLoginError(msg) {
-  loginError.textContent = msg;
-  loginError.classList.toggle("hidden", !msg);
+  $("login-error").textContent = msg;
+  $("login-error").classList.toggle("hidden", !msg);
 }
 
 function fillUsers() {
-  const entry = databases.find(d => d.name === loginDb.value);
-  loginUser.innerHTML = "";
-  (entry ? entry.users : []).forEach(u => loginUser.add(new Option(u, u)));
+  const entry = databases.find(d => d.name === $("login-db").value);
+  $("login-user").innerHTML = "";
+  (entry ? entry.users : []).forEach(u => $("login-user").add(new Option(u, u)));
 }
 
 async function loadDatabases() {
   showLoginError("");
-  loginDb.innerHTML = "";
-  loginBtn.disabled = true;
+  $("login-db").innerHTML = "";
+  $("login-btn").disabled = true;
   try {
     const resp = await fetch("/databases");
     const body = await resp.json();
     if (!resp.ok) throw new Error(body.detail || "could not load databases");
     databases = body.databases;
-    databases.forEach(d => loginDb.add(
+    databases.forEach(d => $("login-db").add(
       new Option(d.name + " — " + d.host + ":" + d.port + "/" + d.service_name, d.name)));
     fillUsers();
-    loginBtn.disabled = false;
+    $("login-btn").disabled = false;
   } catch (e) {
     showLoginError(e.message);
   }
@@ -190,18 +186,18 @@ function showLogin() {
   $("app").classList.add("hidden");
   $("db-switch").classList.add("hidden");
   $("login-sec").classList.remove("hidden");
-  loadDatabases().then(() => loginPw.focus());
+  loadDatabases().then(() => $("login-pw").focus());
 }
 
 function showApp(s) {
   $("login-sec").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("db-switch").classList.remove("hidden");
-  dbUser.textContent = s.user;
-  dbName.textContent = s.database;
-  dbDot.className = s.reachable ? "ok" : "bad";
-  dbDot.title = s.detail || "";
-  qInput.focus();
+  $("db-user").textContent = s.user;
+  $("db-name").textContent = s.database;
+  $("db-dot").className = s.reachable ? "ok" : "bad";
+  $("db-dot").title = s.detail || "";
+  $("q").focus();
 }
 
 async function loadSession() {
@@ -212,40 +208,6 @@ async function loadSession() {
     showLogin();
   }
 }
-
-loginDb.addEventListener("change", fillUsers);
-
-$("login-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  showLoginError("");
-  loginBtn.disabled = true;
-  loginBtn.textContent = "Connecting…";
-  const body = JSON.stringify({ database: loginDb.value, user: loginUser.value, password: loginPw.value });
-  loginPw.value = "";  // never keep the password around, success or failure
-  try {
-    const resp = await fetch("/login", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body,
-    });
-    const s = await resp.json();
-    if (!resp.ok) throw new Error(typeof s.detail === "string" ? s.detail : "login failed");
-    showApp(s);
-  } catch (err) {
-    showLoginError(err.message);
-    loginPw.focus();
-  } finally {
-    loginBtn.disabled = false;
-    loginBtn.textContent = "Connect";
-  }
-});
-
-$("logout").addEventListener("click", async () => {
-  try { await fetch("/logout", { method: "POST" }); } catch (e) { /* show login regardless */ }
-  ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
-  $("activity").innerHTML = "";
-  showLogin();
-});
-
-loadSession();
 
 function logLine(text, cls = "") {
   const el = document.createElement("div");
@@ -296,7 +258,7 @@ async function ask(question) {
   // reset
   ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
   $("activity").innerHTML = "";
-  askBtn.disabled = true;
+  $("ask").disabled = true;
 
   try {
     const resp = await fetch("/query", {
@@ -329,15 +291,58 @@ async function ask(question) {
   } catch (e) {
     logLine("request failed: " + e, "err");
   } finally {
-    askBtn.disabled = false;
+    $("ask").disabled = false;
   }
 }
 
-form.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const q = qInput.value.trim();
-  if (q) ask(q);
-});
+function boot() {
+  document.querySelectorAll(".examples a").forEach(a =>
+    a.addEventListener("click", () => { $("q").value = a.dataset.q; $("q").focus(); }));
+
+  $("login-db").addEventListener("change", fillUsers);
+
+  $("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    showLoginError("");
+    const btn = $("login-btn"), pw = $("login-pw");
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+    const body = JSON.stringify({ database: $("login-db").value, user: $("login-user").value, password: pw.value });
+    pw.value = "";  // never keep the password around, success or failure
+    try {
+      const resp = await fetch("/login", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body,
+      });
+      const s = await resp.json();
+      if (!resp.ok) throw new Error(typeof s.detail === "string" ? s.detail : "login failed");
+      showApp(s);
+    } catch (err) {
+      showLoginError(err.message);
+      pw.focus();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Connect";
+    }
+  });
+
+  $("logout").addEventListener("click", async () => {
+    try { await fetch("/logout", { method: "POST" }); } catch (e) { /* show login regardless */ }
+    ["answer-sec", "sql-sec", "result-sec"].forEach(id => $(id).classList.add("hidden"));
+    $("activity").innerHTML = "";
+    showLogin();
+  });
+
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = $("q").value.trim();
+    if (q) ask(q);
+  });
+
+  loadSession();
+}
+
+if (typeof document !== "undefined") boot();
+if (typeof module !== "undefined") module.exports = QF;
 </script>
 </body>
 </html>

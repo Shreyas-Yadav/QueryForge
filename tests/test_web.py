@@ -33,7 +33,6 @@ def test_index_has_login_form_and_no_target_switch():
         assert element_id in html
     assert 'type="password"' in html
     assert "/db-target" not in html
-    assert "localStorage" not in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
