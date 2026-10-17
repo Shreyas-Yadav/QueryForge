@@ -407,9 +407,7 @@ function showApp(s) {
   SESSION_CHROME.forEach(id => $(id).classList.remove("hidden"));
   $("db-user").textContent = s.user;
   $("db-name").textContent = s.database;
-  $("conn").className = "tag " + (s.reachable ? "g" : "r");
-  $("conn").textContent = s.reachable ? "● CONNECTED" : "● DISCONNECTED";
-  $("conn").title = s.reachable ? "" : (s.detail || "");
+  setConnection(s.reachable, s.detail);
   $("q").focus();
 }
 
@@ -430,15 +428,30 @@ async function loadSession() {
 }
 
 // --- results, SQL and answer panels ---
-const currentRun = { startedAt: 0, sqlAt: null, controller: null, timer: null, sawAnswer: false, lastToolError: null };
+const currentRun = {
+  startedAt: 0, sqlAt: null, controller: null, timer: null,
+  sawAnswer: false, sawResult: false, lastToolError: null, steps: 0,
+};
+let disconnected = false;
 let table = { columns: [], rows: [], sortCol: -1, sortDir: -1 };
 
-function logLine(text, cls = "") {
+function addActivity(kind, text, title) {
   const el = document.createElement("div");
-  el.className = "line " + cls;
-  el.textContent = text;
+  el.className = "line";
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = QF.clock(Math.max(0, Date.now() - currentRun.startedAt));
+  const k = document.createElement("span");
+  k.className = "k-" + kind;
+  k.textContent = kind;
+  const t = document.createElement("span");
+  t.className = "k-" + kind;
+  t.textContent = text;
+  if (title) t.title = title;
+  el.append(ts, k, t);
   $("activity").appendChild(el);
   $("activity").scrollTop = $("activity").scrollHeight;
+  currentRun.steps++;
 }
 
 function toast(message) {
@@ -549,55 +562,156 @@ function showNotice(kind, title, message) {
 }
 
 function handleEvent(ev) {
+  const line = QF.activityLine(ev);
+  if (line) addActivity(line.kind, line.text, line.title);
+  const step = QF.liveStep(ev);
+  if (step) $("activity-live").textContent = "· " + step;
   switch (ev.type) {
-    case "status":        logLine(ev.message); break;
-    case "thinking":      logLine("thinking: " + ev.text.slice(0, 200), "thinking"); break;
-    case "assistant_text":logLine(ev.text); break;
-    case "tool_call":     logLine("→ " + ev.name + "(" + JSON.stringify(ev.input).slice(0, 160) + ")", "tool"); break;
     case "sql":
       currentRun.sqlAt = Date.now();
       $("sql").textContent = ev.sql;
       break;
-    case "result":        showResult(ev); break;
-    case "tool_error":
-      currentRun.lastToolError = ev.message;
-      logLine("⚠ " + ev.name + ": " + ev.message, "err");
+    case "result":
+      currentRun.sawResult = true;
+      showResult(ev);
       break;
+    case "tool_error":    currentRun.lastToolError = ev.message; break;
     case "answer":
       currentRun.sawAnswer = true;
       $("answer").textContent = ev.text || "(no answer)";
       break;
-    case "error":
-      showNotice("err", "Query failed", ev.message);
-      logLine("error: " + ev.message, "err");
-      break;
+    case "error":         showNotice("err", "Query failed", ev.message); break;
   }
 }
 
 // A run that ends with a tool error and no answer is a failure the user must see.
 function finishRun() {
-  if (!currentRun.sawAnswer && currentRun.lastToolError && !$("answer").querySelector(".notice")) {
-    showNotice("err", "Query failed", currentRun.lastToolError);
+  const failed = $("answer").querySelector(".notice");
+  if (!currentRun.sawAnswer && !failed) {
+    if (currentRun.lastToolError) showNotice("err", "Query failed", currentRun.lastToolError);
+    else $("answer").textContent = "(no answer)";
+  }
+  if (!currentRun.sawResult) $("result-sec").classList.add("hidden");
+  $("activity-live").textContent = "";
+  $("activity-meta").textContent = currentRun.steps + " step" + (currentRun.steps === 1 ? "" : "s") +
+    " · " + ((Date.now() - currentRun.startedAt) / 1000).toFixed(1) + " s";
+}
+
+function skeletonLines(widths) {
+  return widths.map(w => {
+    const el = document.createElement("span");
+    el.className = "skel";
+    el.style.width = w;
+    return el;
+  });
+}
+
+function showSkeletons() {
+  const a = $("answer");
+  a.replaceChildren();
+  skeletonLines(["92%", "78%", "60%"]).forEach(el => { a.append(el, document.createElement("br")); });
+  const t = $("result");
+  t.innerHTML = "";
+  const body = t.createTBody();
+  for (let r = 0; r < 5; r++) {
+    const tr = body.insertRow();
+    for (let c = 0; c < 6; c++) tr.insertCell().append(...skeletonLines([(40 + (r * 7 + c * 13) % 50) + "px"]));
+  }
+  $("result-meta").textContent = "running…";
+  $("trunc").classList.add("hidden");
+  $("result-sec").classList.remove("hidden");
+}
+
+// --- run lifecycle ---
+function setRunning(on) {
+  clearInterval(currentRun.timer);
+  currentRun.timer = null;
+  const btn = $("ask");
+  $("stop").classList.toggle("hidden", !on);
+  document.title = on ? "● Running – QueryForge" : "QueryForge";
+  if (on) {
+    btn.disabled = true;
+    const tick = () => {
+      const spin = document.createElement("span");
+      spin.className = "spin";
+      btn.replaceChildren(spin, document.createTextNode(
+        "Running · " + ((Date.now() - currentRun.startedAt) / 1000).toFixed(1) + "s"));
+    };
+    tick();
+    currentRun.timer = setInterval(tick, 100);
+  } else {
+    btn.textContent = "Run";
+    btn.disabled = disconnected;
   }
 }
 
-async function ask(question) {
-  // reset
-  $("panels").classList.remove("hidden");
+function stopRun() {
+  if (!currentRun.controller) return;
+  currentRun.controller.abort();
+  currentRun.controller = null;
+  setRunning(false);
+  showNotice("warn", "Run stopped", "You cancelled this run.");
   $("result-sec").classList.add("hidden");
-  $("answer").textContent = "";
-  $("sql").textContent = "";
-  $("activity").innerHTML = "";
-  $("ask").disabled = true;
-  Object.assign(currentRun, { startedAt: Date.now(), sqlAt: null, sawAnswer: false, lastToolError: null });
+  addActivity("stop", "Cancelled by user");
+  $("activity-live").textContent = "· stopped";
+}
 
+function setConnection(reachable, detail) {
+  disconnected = !reachable;
+  const c = $("conn");
+  c.className = "tag " + (reachable ? "g" : "r");
+  c.textContent = reachable ? "● CONNECTED" : "● DISCONNECTED";
+  c.title = reachable ? "" : (detail || "");
+  $("reconnect").classList.toggle("hidden", reachable);
+  const btn = $("ask");
+  if (!currentRun.controller) btn.disabled = disconnected;
+  btn.title = disconnected ? "Reconnect to run queries" : "";
+}
+
+async function reconnect() {
+  try {
+    const s = await (await fetch("/session")).json();
+    if (!s.logged_in) { showLogin(); return; }
+    showApp(s);
+  } catch (e) {
+    setConnection(false, String(e));
+  }
+}
+
+// Called when a run starts; the saved-queries sidebar hooks in here.
+function onRunStart(question) {}
+
+async function ask(question) {
+  if (disconnected) return;
+  if (currentRun.controller) currentRun.controller.abort();
+  const controller = new AbortController();
+  Object.assign(currentRun, {
+    startedAt: Date.now(), sqlAt: null, controller,
+    sawAnswer: false, sawResult: false, lastToolError: null, steps: 0,
+  });
+  QF.store.set("qf.lastQuestion", question);
+  onRunStart(question);
+
+  $("panels").classList.remove("hidden");
+  $("sql").textContent = "";
+  $("activity").replaceChildren();
+  $("activity-sec").open = false;
+  $("activity-live").textContent = "";
+  $("activity-meta").textContent = "";
+  showSkeletons();
+  setRunning(true);
+
+  const current = () => currentRun.controller === controller;
   try {
     const resp = await fetch("/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
+      signal: controller.signal,
     });
     if (resp.status === 401) {
+      currentRun.controller = null;
+      setRunning(false);
       showLogin();
       showLoginError("Not connected — log in again.");
       return;
@@ -607,7 +721,7 @@ async function ask(question) {
     let buf = "";
     while (true) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done || !current()) break;
       buf += decoder.decode(value, { stream: true });
       const parts = buf.split("\n\n");
       buf = parts.pop();  // keep incomplete trailer
@@ -615,15 +729,21 @@ async function ask(question) {
         const line = part.split("\n").find(l => l.startsWith("data: "));
         if (!line) continue;
         const ev = JSON.parse(line.slice(6));
-        if (ev.type === "done") continue;
+        if (ev.type === "done" || !current()) continue;
         handleEvent(ev);
       }
     }
   } catch (e) {
-    logLine("request failed: " + e, "err");
+    if (e.name === "AbortError" || !current()) return;
+    showNotice("err", "Request failed", String(e));
+    addActivity("error", "request failed: " + e);
+    setConnection(false, String(e));
   } finally {
-    finishRun();
-    $("ask").disabled = false;
+    if (current()) {
+      finishRun();
+      currentRun.controller = null;
+      setRunning(false);
+    }
   }
 }
 
@@ -660,8 +780,9 @@ function boot() {
 
   $("logout").addEventListener("click", async () => {
     try { await fetch("/logout", { method: "POST" }); } catch (e) { /* show login regardless */ }
+    if (currentRun.controller) stopRun();
     $("panels").classList.add("hidden");
-    $("activity").innerHTML = "";
+    $("activity").replaceChildren();
     showLogin();
   });
 
@@ -678,6 +799,28 @@ function boot() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     flashButton(e.currentTarget, "Downloaded ✓");
   });
+  $("stop").addEventListener("click", stopRun);
+  $("reconnect").addEventListener("click", reconnect);
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      $("q").focus();
+      $("q").select();
+    } else if (e.key === "Escape" && currentRun.controller) {
+      e.preventDefault();
+      stopRun();
+    } else if (e.key === "ArrowUp" && document.activeElement === $("q")) {
+      const last = QF.store.get("qf.lastQuestion", "");
+      if (typeof last === "string" && last) {
+        e.preventDefault();
+        $("q").value = last;
+      }
+    }
+  });
+  $("q").addEventListener("focus", () => { $("khint").textContent = "↵"; });
+  $("q").addEventListener("blur", () => { $("khint").textContent = "⌘K"; });
+
   $("rerun").addEventListener("click", () => {
     const q = $("q").value.trim();
     if (q) ask(q);
