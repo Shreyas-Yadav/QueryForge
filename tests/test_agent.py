@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from queryforge import agent, agent_core, prompt
+from queryforge import agent, agent_core
 from queryforge.sql_guard import SqlGuardError
 
 
@@ -45,9 +45,6 @@ def _fake_settings(monkeypatch):
             model="claude-sonnet-4-6", gcp_project_id="proj", vertex_region="us-east5"
         ),
     )
-    # Keep the schema overview empty/offline during tests.
-    prompt._schema_overview.cache_clear()
-    monkeypatch.setattr(prompt.db, "list_tables", lambda: [])
 
 
 def _install_client(monkeypatch, responses):

@@ -53,58 +53,6 @@ def test_format_type():
     assert db._format_type("DATE", None, None, None) == "DATE"
 
 
-def test_merge_listing_tags_object_type():
-    tables = [{"table_name": "ORDERS", "comments": "Sales orders"}]
-    synonyms = [
-        {
-            "synonym_name": "CUSTOMERS",
-            "table_owner": "SALES",
-            "table_name": "CUSTOMER_T",
-            "comments": "Customer master",
-        }
-    ]
-    merged = db._merge_listing(tables, synonyms)
-
-    assert merged == [
-        {"table_name": "ORDERS", "comments": "Sales orders", "object_type": "TABLE"},
-        {
-            "table_name": "CUSTOMERS",
-            "comments": "Customer master",
-            "object_type": "SYNONYM",
-            "points_to": "SALES.CUSTOMER_T",
-        },
-    ]
-
-
-def test_merge_listing_tables_come_first():
-    tables = [{"table_name": "ZZZ", "comments": None}]
-    synonyms = [
-        {"synonym_name": "AAA", "table_owner": "S", "table_name": "T", "comments": None}
-    ]
-    merged = db._merge_listing(tables, synonyms)
-    assert [m["table_name"] for m in merged] == ["ZZZ", "AAA"]
-
-
-def test_merge_listing_table_shadows_synonym_of_same_name():
-    tables = [{"table_name": "ORDERS", "comments": "real table"}]
-    synonyms = [
-        {
-            "synonym_name": "ORDERS",
-            "table_owner": "OTHER",
-            "table_name": "ORDERS_T",
-            "comments": "synonym",
-        }
-    ]
-    merged = db._merge_listing(tables, synonyms)
-
-    assert len(merged) == 1
-    assert merged[0]["object_type"] == "TABLE"
-    assert merged[0]["comments"] == "real table"
-
-
-# --- connection profile + login state -----------------------------------------
-
-
 def test_settings_load_without_any_oracle_config():
     """Constructing Settings must not require any database configuration."""
     assert Settings(_env_file=None).max_rows == 200
@@ -230,20 +178,107 @@ def live_login():
 
 
 @live
-def test_live_list_tables(live_login):
-    tables = db.list_tables()
-    assert isinstance(tables, list)
-    assert all(item["object_type"] in ("TABLE", "SYNONYM") for item in tables)
-    assert all(
-        "points_to" in item for item in tables if item["object_type"] == "SYNONYM"
-    )
+def test_live_describe_performance_view(live_login):
+    described = db.describe_table("V$SQLAREA")
+    assert described["columns"]
+    assert described["resolved_to"] == "SYS.V_$SQLAREA"
 
 
 @live
-def test_live_describe_synonym_resolves(live_login):
-    synonyms = [t for t in db.list_tables() if t["object_type"] == "SYNONYM"]
-    if not synonyms:
-        pytest.skip("No synonyms in the live schema to resolve.")
-    described = db.describe_table(synonyms[0]["table_name"])
-    assert described["columns"], "synonym should resolve to an object with columns"
-    assert described["resolved_to"] == synonyms[0]["points_to"]
+def test_live_rejects_application_table(live_login):
+    from queryforge.sql_guard import SqlGuardError
+
+    with pytest.raises(SqlGuardError):
+        db.run_select("SELECT * FROM employee")
+
+
+# --- internal-objects-only policy (dictionary lookups faked) --------------------
+
+class _DictCursor:
+    """Answers the resolver's ALL_SYNONYMS / ALL_OBJECTS / ALL_USERS lookups from
+    small in-memory tables and records every other statement it is asked to run."""
+
+    SYNONYMS = {
+        ("PUBLIC", "V$SQLAREA"): ("SYS", "V_$SQLAREA"),
+        ("PUBLIC", "EMP_PUB"): ("SHREYAS", "EMPLOYEE"),
+    }
+    OBJECTS = {("SHREYAS", "EMPLOYEE"), ("SYS", "V_$SQLAREA"), ("SYS", "DUAL")}
+    INTERNAL = {"SYS", "SYSTEM"}
+
+    def __init__(self):
+        self.executed: list[str] = []
+        self._row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, **binds):
+        low = " ".join(sql.lower().split())
+        if "from all_synonyms" in low and "synonym_name = :name" in low:
+            hit = self.SYNONYMS.get((binds["owner"], binds["name"]))
+            self._row = (*hit, None) if hit else None
+        elif "from all_objects" in low:
+            hit = (binds["owner"], binds["name"]) in self.OBJECTS
+            self._row = (1,) if hit else None
+        elif "from all_users" in low:
+            self._row = (1,) if binds["owner"] in self.INTERNAL else None
+        else:
+            self.executed.append(sql)
+            self._row = None
+
+    def fetchone(self):
+        return self._row
+
+
+@pytest.fixture
+def dict_db(fake_pools, monkeypatch):
+    db.replace_pool(LOCAL)
+    cur = _DictCursor()
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return cur
+
+    monkeypatch.setattr(db, "_acquire", lambda: _Conn())
+    return cur
+
+
+def test_resolve_object_follows_public_synonym(dict_db):
+    assert db._resolve_object(dict_db, "SHREYAS", None, "V$SQLAREA") == ("SYS", "V_$SQLAREA")
+
+
+def test_resolve_object_prefers_current_schema(dict_db):
+    assert db._resolve_object(dict_db, "SHREYAS", None, "EMPLOYEE") == ("SHREYAS", "EMPLOYEE")
+
+
+def test_resolve_object_public_synonym_onto_user_table(dict_db):
+    assert db._resolve_object(dict_db, "SHREYAS", None, "EMP_PUB") == ("SHREYAS", "EMPLOYEE")
+
+
+def test_resolve_object_unknown_is_none(dict_db):
+    assert db._resolve_object(dict_db, "SHREYAS", None, "NOPE") is None
+
+
+def test_describe_user_table_is_refused(dict_db):
+    """Scenario (a): describing an application table is not allowed."""
+    with pytest.raises(ValueError, match="SHREYAS"):
+        db.describe_table("employee")
+    assert dict_db.executed == []  # no column metadata was read
+
+
+def test_run_select_on_user_table_is_refused_before_execution(dict_db):
+    """Scenario (b): SELECT * FROM employee never reaches the database."""
+    from queryforge.sql_guard import SqlGuardError
+
+    with pytest.raises(SqlGuardError, match="EMPLOYEE"):
+        db.run_select("select * from employee")
+    assert dict_db.executed == []

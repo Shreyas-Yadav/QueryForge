@@ -9,7 +9,7 @@ import oracledb
 import pytest
 from fastapi.testclient import TestClient
 
-from queryforge import config, prompt
+from queryforge import config
 from queryforge.web import app as app_module
 
 client = TestClient(app_module.app)
@@ -36,13 +36,6 @@ def databases_file(tmp_path, monkeypatch):
     config.get_settings.cache_clear()
     yield path
     config.get_settings.cache_clear()
-
-
-@pytest.fixture
-def cache_clears(monkeypatch) -> list[bool]:
-    calls: list[bool] = []
-    monkeypatch.setattr(prompt, "clear_schema_cache", lambda: calls.append(True))
-    return calls
 
 
 def login(**overrides):
@@ -101,7 +94,7 @@ def test_databases_file_is_reread(databases_file):
 # --- /login -------------------------------------------------------------------
 
 
-def test_login_success(databases_file, fake_pools, cache_clears):
+def test_login_success(databases_file, fake_pools):
     r = login()
 
     assert r.status_code == 200
@@ -110,7 +103,6 @@ def test_login_success(databases_file, fake_pools, cache_clears):
     assert body["database"] == "AIWORLD (local)"
     assert body["user"] == "shreyas"
     assert body["reachable"] is True
-    assert cache_clears
 
     profile = fake_pools.created[0].profile
     assert profile.dsn == oracledb.makedsn("localhost", 1539, service_name="AIWORLD")
@@ -187,13 +179,11 @@ def test_failed_login_keeps_previous_session(databases_file, fake_pools):
     assert fake_pools.created[0].closed is False
 
 
-def test_relogin_replaces_previous_pool(databases_file, fake_pools, cache_clears):
+def test_relogin_replaces_previous_pool(databases_file, fake_pools):
     login()
-    cache_clears.clear()
     assert login(database="Scratch", user="system").status_code == 200
 
     assert fake_pools.created[0].closed is True
-    assert cache_clears
     s = client.get("/session").json()
     assert (s["database"], s["user"]) == ("Scratch", "system")
 
@@ -201,15 +191,13 @@ def test_relogin_replaces_previous_pool(databases_file, fake_pools, cache_clears
 # --- /logout ------------------------------------------------------------------
 
 
-def test_logout(databases_file, fake_pools, cache_clears):
+def test_logout(databases_file, fake_pools):
     login()
-    cache_clears.clear()
 
     r = client.post("/logout")
 
     assert r.json() == {"logged_in": False}
     assert fake_pools.created[0].closed is True
-    assert cache_clears
     assert client.get("/session").json()["logged_in"] is False
     assert client.post("/query", json={"question": "x"}).status_code == 401
 

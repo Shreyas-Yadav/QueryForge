@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from queryforge import agent_core, agent_gemini, prompt
+from queryforge import agent_core, agent_gemini
 
 
 def _part(text=None, function_call=None):
@@ -48,8 +48,6 @@ def _fake_settings(monkeypatch):
             vertex_region="us-east5", gemini_model="gemini-3.1-flash-lite",
         ),
     )
-    prompt._schema_overview.cache_clear()
-    monkeypatch.setattr(prompt.db, "list_tables", lambda: [])
 
 
 def test_happy_path_runs_query_and_answers(monkeypatch):

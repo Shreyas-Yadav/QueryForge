@@ -27,6 +27,7 @@ from typing import Any
 import oracledb
 
 from .config import OracleProfile, get_settings
+from .object_policy import check_access
 from .sql_guard import apply_row_cap, validate_select
 
 logger = logging.getLogger(__name__)
@@ -182,100 +183,19 @@ def _to_jsonable(value: Any) -> Any:
 
 # --- Schema introspection (read-only) ----------------------------------------
 
-def list_tables() -> list[dict[str, Any]]:
-    """List queryable objects in the target schema: base tables plus synonyms.
-
-    Each item carries ``table_name`` (the name to query), ``comments``, and an
-    ``object_type`` of ``"TABLE"`` or ``"SYNONYM"``; synonyms also carry
-    ``points_to`` (``"OWNER.NAME"`` of the underlying object).
-
-    Synonyms include the target schema's private synonyms plus business PUBLIC
-    synonyms. Oracle-maintained system PUBLIC synonyms, DB-link synonyms, and
-    synonyms whose target no longer exists are filtered out.
-    """
-    tables_sql = """
-        SELECT t.table_name, c.comments
-        FROM all_tables t
-        LEFT JOIN all_tab_comments c
-               ON c.owner = t.owner AND c.table_name = t.table_name
-        WHERE t.owner = :owner
-        ORDER BY t.table_name
-    """
-    synonyms_sql = """
-        SELECT s.synonym_name, s.table_owner, s.table_name, c.comments
-        FROM all_synonyms s
-        LEFT JOIN all_users u
-               ON u.username = s.table_owner
-        LEFT JOIN all_tab_comments c
-               ON c.owner = s.table_owner AND c.table_name = s.table_name
-        WHERE s.db_link IS NULL
-          AND ( s.owner = :owner
-                OR (s.owner = 'PUBLIC' AND NVL(u.oracle_maintained, 'N') = 'N') )
-          AND EXISTS (
-                SELECT 1 FROM all_tables t
-                 WHERE t.owner = s.table_owner AND t.table_name = s.table_name
-                UNION ALL
-                SELECT 1 FROM all_views v
-                 WHERE v.owner = s.table_owner AND v.view_name = s.table_name )
-        ORDER BY s.synonym_name
-    """
-    owner = _schema_name()
-    with _acquire() as conn, conn.cursor() as cur:
-        cur.execute(tables_sql, owner=owner)
-        tables = [{"table_name": name, "comments": comments} for name, comments in cur]
-
-        cur.execute(synonyms_sql, owner=owner)
-        synonyms = [
-            {
-                "synonym_name": syn_name,
-                "table_owner": tab_owner,
-                "table_name": tab_name,
-                "comments": comments,
-            }
-            for syn_name, tab_owner, tab_name, comments in cur
-        ]
-
-    return _merge_listing(tables, synonyms)
-
-
-def _merge_listing(
-    tables: list[dict[str, Any]], synonyms: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Combine base tables and synonyms into one tagged listing (pure helper).
-
-    Tables come first (tagged ``object_type="TABLE"``), then synonyms tagged
-    ``"SYNONYM"`` with a ``points_to`` target. A synonym whose name collides with
-    a base table is dropped — the real table shadows it at query-resolution time.
-    """
-    table_names = {t["table_name"] for t in tables}
-    merged: list[dict[str, Any]] = [
-        {"table_name": t["table_name"], "comments": t["comments"], "object_type": "TABLE"}
-        for t in tables
-    ]
-    for s in synonyms:
-        if s["synonym_name"] in table_names:
-            continue
-        merged.append(
-            {
-                "table_name": s["synonym_name"],
-                "comments": s["comments"],
-                "object_type": "SYNONYM",
-                "points_to": f"{s['table_owner']}.{s['table_name']}",
-            }
-        )
-    return merged
-
-
 def describe_table(name: str) -> dict[str, Any]:
-    """Return columns (with comments), primary key, and foreign keys for a table.
+    """Return columns (with comments), primary key, and foreign keys for one
+    Oracle-maintained table or view.
 
-    Resolves synonyms: if ``name`` is not a table/view in the target schema, it is
-    looked up in ``ALL_SYNONYMS`` (private preferred over PUBLIC) and the
-    underlying object is introspected instead. The returned ``table_name`` stays
-    the name the caller passed (queryable via ``current_schema``); when a synonym
-    was followed, ``resolved_to`` names the underlying ``OWNER.NAME``.
+    ``name`` may be ``NAME`` or ``OWNER.NAME``. It is resolved like a query would
+    resolve it (current schema, then PUBLIC synonym, following synonyms); when a
+    synonym was followed, ``resolved_to`` names the underlying ``OWNER.NAME``.
+
+    Raises:
+        ValueError: if the object does not exist or is not owned by an
+            Oracle-maintained schema (application tables are off-limits).
     """
-    table = name.strip().upper()
+    owner_part, _, name_part = name.strip().upper().rpartition(".")
     schema = _schema_name()
 
     columns_sql = """
@@ -312,16 +232,19 @@ def describe_table(name: str) -> dict[str, Any]:
         ORDER BY cc.position
     """
 
-    synonym_sql = """
-        SELECT table_owner, table_name FROM all_synonyms
-        WHERE synonym_name = :name AND db_link IS NULL AND owner IN (:owner, 'PUBLIC')
-        ORDER BY CASE WHEN owner = :owner THEN 0 ELSE 1 END
-        FETCH FIRST 1 ROW ONLY
-    """
+    with _acquire() as conn, conn.cursor() as cur:
+        target = _resolve_object(cur, schema, owner_part or None, name_part)
+        if target is None:
+            raise ValueError(f"Table not found: {name}")
+        owner, table = target
+        if not _is_oracle_maintained(cur, owner):
+            raise ValueError(
+                f"Access denied: {name.strip().upper()} belongs to schema {owner}. Only Oracle "
+                "data dictionary and performance views can be described."
+            )
 
-    def _columns(cur, owner: str) -> list[dict[str, Any]]:
         cur.execute(columns_sql, owner=owner, tname=table)
-        return [
+        columns = [
             {
                 "name": cname,
                 "type": _format_type(dtype, dlen, dprec, dscale),
@@ -330,25 +253,8 @@ def describe_table(name: str) -> dict[str, Any]:
             }
             for cname, dtype, dlen, dprec, dscale, nullable, comment in cur
         ]
-
-    with _acquire() as conn, conn.cursor() as cur:
-        # Try the name as a table/view in the target schema first.
-        owner = schema
-        resolved_to: str | None = None
-        columns = _columns(cur, owner)
-
         if not columns:
-            # Fall back to resolving a synonym to its underlying object.
-            cur.execute(synonym_sql, name=table, owner=schema)
-            row = cur.fetchone()
-            if row is not None:
-                owner, base_table = row
-                resolved_to = f"{owner}.{base_table}"
-                # The columns/PK/FK queries key on table_name, so re-target it.
-                table = base_table
-                columns = _columns(cur, owner)
-            if not columns:
-                raise ValueError(f"Table not found: {name}")
+            raise ValueError(f"Table not found: {name}")
 
         cur.execute(pk_sql, owner=owner, tname=table)
         primary_key = [row[0] for row in cur]
@@ -365,9 +271,84 @@ def describe_table(name: str) -> dict[str, Any]:
         "primary_key": primary_key,
         "foreign_keys": foreign_keys,
     }
-    if resolved_to is not None:
-        result["resolved_to"] = resolved_to
+    resolved = f"{owner}.{table}"
+    if resolved != result["table_name"]:
+        result["resolved_to"] = resolved
     return result
+
+
+# --- Object resolution (internal-objects-only policy) ------------------------
+
+_MAX_SYNONYM_HOPS = 8
+
+_SYNONYM_SQL = """
+    SELECT table_owner, table_name, db_link FROM all_synonyms
+    WHERE owner = :owner AND synonym_name = :name
+"""
+_OBJECT_SQL = """
+    SELECT 1 FROM all_objects
+    WHERE owner = :owner AND object_name = :name
+      AND object_type NOT IN ('PACKAGE BODY', 'TYPE BODY', 'SYNONYM')
+    FETCH FIRST 1 ROW ONLY
+"""
+_ORACLE_MAINTAINED_SQL = """
+    SELECT 1 FROM all_users WHERE username = :owner AND oracle_maintained = 'Y'
+"""
+
+
+def _resolve_object(cur, schema: str, owner: str | None, name: str) -> tuple[str, str] | None:
+    """Resolve a name the way Oracle does and return the final ``(owner, name)``.
+
+    An unqualified name is looked up in ``schema`` (the session's current schema)
+    first, then as a PUBLIC synonym. Synonym chains are followed. Returns None
+    when nothing matches, or when a synonym points over a database link.
+    """
+    candidates = [owner] if owner else [schema, "PUBLIC"]
+    for start in candidates:
+        cur_owner, cur_name = start, name
+        followed = False
+        for _ in range(_MAX_SYNONYM_HOPS):
+            cur.execute(_SYNONYM_SQL, owner=cur_owner, name=cur_name)
+            syn = cur.fetchone()
+            if syn is None:
+                break
+            if syn[2] is not None:  # remote object: cannot be checked
+                return None
+            cur_owner, cur_name, followed = syn[0], syn[1], True
+        else:
+            return None  # synonym loop
+        if followed:
+            # The target's owner is known from the synonym even when the object
+            # itself is not visible to this user (the query would fail anyway).
+            return cur_owner, cur_name
+        cur.execute(_OBJECT_SQL, owner=cur_owner, name=cur_name)
+        if cur.fetchone() is not None:
+            return cur_owner, cur_name
+    return None
+
+
+def _is_oracle_maintained(cur, owner: str) -> bool:
+    cur.execute(_ORACLE_MAINTAINED_SQL, owner=owner)
+    return cur.fetchone() is not None
+
+
+def _check_internal_only(cur, root) -> None:  # type: ignore[no-untyped-def]
+    """Apply :func:`queryforge.object_policy.check_access` against the live dictionary."""
+    schema = _schema_name()
+    resolved: dict[tuple[str | None, str], tuple[str, str] | None] = {}
+    internal: dict[str, bool] = {}
+
+    def resolve(owner: str | None, name: str) -> tuple[str, str] | None:
+        if (owner, name) not in resolved:
+            resolved[(owner, name)] = _resolve_object(cur, schema, owner, name)
+        return resolved[(owner, name)]
+
+    def is_internal(owner: str) -> bool:
+        if owner not in internal:
+            internal[owner] = _is_oracle_maintained(cur, owner)
+        return internal[owner]
+
+    check_access(root, resolve, is_internal)
 
 
 def _format_type(
@@ -391,17 +372,18 @@ def run_select(sql: str, max_rows: int | None = None) -> dict[str, Any]:
 
     Returns a dict with ``columns``, ``rows`` (JSON-safe), ``row_count``,
     ``truncated`` (True if more rows existed than the cap), and the executed
-    ``sql``. Raises :class:`~queryforge.sql_guard.SqlGuardError` for unsafe SQL
-    and ``oracledb`` errors for execution failures (caller decides how to surface).
+    ``sql``. Raises :class:`~queryforge.sql_guard.SqlGuardError` for unsafe SQL or
+    SQL touching non-Oracle-maintained objects, and ``oracledb`` errors for execution failures (caller decides how to surface).
     """
     cfg = get_settings()
     cap = cfg.max_rows if max_rows is None else max_rows
 
-    validate_select(sql)
+    root = validate_select(sql)
     # Fetch one extra row so we can tell the result was truncated.
     executable = apply_row_cap(sql, cap + 1)
 
     with _acquire() as conn, conn.cursor() as cur:
+        _check_internal_only(cur, root)
         cur.execute(executable)
         columns = [d.name for d in cur.description]
         fetched = cur.fetchall()

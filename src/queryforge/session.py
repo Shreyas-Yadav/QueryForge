@@ -1,16 +1,14 @@
 """The single active database login (one local user, one login at a time).
 
-Logging in or out must change two things together: the connection pool in
-:mod:`queryforge.db` and the schema overview cached in the agent's system prompt
-(:mod:`queryforge.prompt`). Otherwise the agent keeps advertising the previous
-user's tables. This module is the one place that does both, under one lock.
+Logging in or out swaps the connection pool in :mod:`queryforge.db` under one
+lock, so concurrent requests never see a half-replaced login.
 """
 
 from __future__ import annotations
 
 import threading
 
-from . import db, prompt
+from . import db
 from .config import OracleProfile
 from .connections import DatabaseEntry
 
@@ -29,13 +27,11 @@ def login(entry: DatabaseEntry, user: str, password: str) -> None:
     )
     with _lock:
         db.replace_pool(profile)
-        prompt.clear_schema_cache()
 
 
 def logout() -> None:
     with _lock:
         db.close_pool()
-        prompt.clear_schema_cache()
 
 
 def status() -> dict[str, object]:

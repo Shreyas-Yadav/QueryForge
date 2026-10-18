@@ -1,72 +1,44 @@
 """System-prompt construction for the QueryForge agent (provider-neutral).
 
 Builds the instruction text both provider loops send as their system prompt,
-including a best-effort schema overview and the dynamic-performance / AWR-ASH
-view catalog. Kept separate from the agent loops so the prompt — the part most
+including the dynamic-performance / AWR-ASH view catalog. QueryForge only reads
+Oracle's data dictionary and performance views, so no application schema is ever
+listed here. Kept separate from the agent loops so the prompt — the part most
 often edited — has one clear home.
 """
 
 from __future__ import annotations
 
-import logging
-from functools import lru_cache
-
-from . import db
-
-logger = logging.getLogger("queryforge.audit")
-
-
-@lru_cache(maxsize=1)
-def _schema_overview() -> str:
-    """A compact 'table — comment' listing embedded in the (cached) system prompt.
-
-    Best-effort: if the DB is unreachable at build time, return an empty string and
-    let the model discover the schema via the list_tables tool.
-    """
-    try:
-        tables = db.list_tables()
-    except Exception as e:  # noqa: BLE001 — degrade gracefully
-        logger.warning("Could not pre-load schema overview: %s", e)
-        return ""
-    lines = [
-        f"- {t['table_name']}" +
-        (f" — {t['comments']}" if t.get("comments") else "")
-        for t in tables
-    ]
-    return "\n".join(lines)
-
-
-def clear_schema_cache() -> None:
-    """Forget the cached schema overview.
-
-    Must be called whenever the agent is pointed at a different database —
-    otherwise the system prompt keeps advertising the previous database's tables
-    and the model writes SQL against objects that aren't there.
-    """
-    _schema_overview.cache_clear()
-
 
 def system_prompt_text() -> str:
-    """The provider-neutral system prompt, including a best-effort schema overview."""
-    overview = _schema_overview()
-    schema_section = (
-        f"\n\nTables in this schema:\n{overview}" if overview else
-        "\n\nThe schema overview was not preloaded — call `list_tables` to discover tables."
-    )
+    """The provider-neutral system prompt."""
     return (
-        "You are QueryForge, a careful data analyst with read-only access to an "
-        "Oracle database. Turn the user's natural-language question into Oracle SQL, "
+        "You are QueryForge, a careful Oracle performance analyst with read-only access "
+        "to an Oracle database. Turn the user's natural-language question into Oracle SQL, "
         "run it, and answer in plain language grounded in the actual results.\n\n"
+        "Scope — what you may query:\n"
+        "- ONLY Oracle's data dictionary and dynamic performance views owned by Oracle "
+        "(SYS and other Oracle-maintained schemas): `V$`/`GV$` views, `DBA_HIST_` (AWR) "
+        "views, `DBA_`/`ALL_`/`USER_` dictionary views, and packages such as `DBMS_XPLAN`. "
+        "Application / user-created tables, views and functions are off-limits: never "
+        "query or describe them. The application rejects such SQL, so if the user asks "
+        "about application data (e.g. an EMPLOYEE table), refuse briefly and explain that "
+        "QueryForge only analyses database performance through Oracle's internal views.\n"
+        "- Do not list or enumerate the database's schemas, users, or application objects "
+        "(e.g. `SELECT username FROM dba_users`, `ALL_USERS`, or browsing `DBA_TABLES`/"
+        "`DBA_OBJECTS` to see what tables exist). If asked to list schemas or users, "
+        "refuse and say this is outside QueryForge's scope. Looking up a single name for "
+        "an ID that appears in a performance result (e.g. ASH `USER_ID` → `DBA_USERS`, "
+        "`CURRENT_OBJ#` → `DBA_OBJECTS`) is fine.\n"
+        "- Call `list_tables` for a catalog of the key performance views.\n\n"
         "Rules:\n"
         "- The database is ORACLE. Use Oracle SQL dialect: `FETCH FIRST n ROWS ONLY` "
         "(never `LIMIT`), `NVL(x, y)`, `SYSDATE`/`CURRENT_DATE`, `||` for string "
         "concatenation, and `DATE '2024-01-01'` for date literals.\n"
         "- Data-dictionary identifiers are uppercase; for case-insensitive text "
         "matching use `UPPER(col) LIKE UPPER('...')`.\n"
-        "- Inspect unfamiliar tables with `describe_table` before writing SQL.\n"
-        "- Beyond the schema tables listed below, you may also query Oracle's dynamic "
-        "performance and data-dictionary views for questions about database performance, "
-        "load, or monitoring. Key ones: `V$SQLAREA`/`V$SQL`/`V$SQLSTATS` hold per-statement "
+        "- Inspect unfamiliar views with `describe_table` before writing SQL.\n"
+        "- Key performance views: `V$SQLAREA`/`V$SQL`/`V$SQLSTATS` hold per-statement "
         "stats (`ELAPSED_TIME`, `CPU_TIME`, `EXECUTIONS`, `BUFFER_GETS`, `DISK_READS`, "
         "`SQL_ID`, `SQL_TEXT`; time columns are in MICROSECONDS), and `DBA_HIST_SQLSTAT` "
         "holds AWR history. For active-session / wait analysis use ASH (Active Session "
@@ -103,5 +75,4 @@ def system_prompt_text() -> str:
         "Instead give a brief (1-3 sentence) natural-language summary: the headline "
         "finding, totals, ranges, or anything notable. For a single aggregate value "
         "(e.g. a COUNT) state that number; otherwise describe the result, don't dump it."
-        + schema_section
     )

@@ -60,11 +60,6 @@ def logged_in(fake_pools):
 
 @pytest.fixture
 def fake_db(monkeypatch):
-    monkeypatch.setattr(
-        agent_core.db,
-        "list_tables",
-        lambda: [{"table_name": "EMPLOYEES", "comments": None, "object_type": "TABLE"}],
-    )
     monkeypatch.setattr(agent_core.db, "run_select", lambda sql: RESULT)
 
 
