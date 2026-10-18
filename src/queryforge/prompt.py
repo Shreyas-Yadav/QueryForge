@@ -19,7 +19,7 @@ def system_prompt_text() -> str:
         "Scope — what you may query:\n"
         "- ONLY Oracle's data dictionary and dynamic performance views owned by Oracle "
         "(SYS and other Oracle-maintained schemas): `V$`/`GV$` views, `DBA_HIST_` (AWR) "
-        "views, `DBA_`/`ALL_`/`USER_` dictionary views, and packages such as `DBMS_XPLAN`. "
+        "views, `DBA_`/`ALL_`/`USER_` dictionary views, and the `DBMS_XPLAN` package (no other packages or schema functions). "
         "Application / user-created tables, views and functions are off-limits: never "
         "query or describe them. The application rejects such SQL, so if the user asks "
         "about application data (e.g. an EMPLOYEE table), refuse briefly and explain that "

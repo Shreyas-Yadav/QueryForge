@@ -42,52 +42,84 @@ def _ident(node: exp.Expression | None) -> str | None:
     return node.name.upper() if node.name else None
 
 
-def _leftmost_name(node: exp.Expression) -> str | None:
-    """First name of a dotted prefix such as ``sys.dbms_xplan`` → ``SYS``."""
-    while isinstance(node, exp.Dot):
-        node = node.this
+# Oracle packages a query may call, qualified as PKG.FN or SCHEMA.PKG.FN. Every
+# other schema-level function or package is refused: some Oracle packages run SQL
+# handed to them as text (DBMS_XMLGEN.GETXML('SELECT * FROM employee')), which
+# would bypass the table check entirely.
+ALLOWED_PACKAGES = frozenset({"DBMS_XPLAN"})
+
+# Built-in SQL functions that can read arbitrary tables by path or query text.
+_DENIED_BUILTINS = frozenset({"XMLQUERY", "XMLTABLE", "XMLEXISTS"})
+
+
+def _dotted_path(node: exp.Expression) -> tuple[str, ...] | None:
+    """Names of a dotted prefix (``sys.dbms_xplan`` → ``("SYS", "DBMS_XPLAN")``),
+    or None if any part is not a plain name (e.g. a method on a call result)."""
+    if isinstance(node, exp.Dot):
+        left, right = _dotted_path(node.this), _dotted_path(node.expression)
+        return left + right if left is not None and right is not None else None
     if isinstance(node, exp.Column):
-        return _ident(node.parts[0]) if node.parts else None
-    return _ident(node) if isinstance(node, exp.Identifier) else None
+        names = tuple(_ident(part) for part in node.parts)
+        return names if all(names) else None  # type: ignore[return-value]
+    if isinstance(node, exp.Identifier):
+        return (_ident(node),)  # type: ignore[return-value]
+    return None
+
+
+def _cte_in_scope(table: exp.Table, name: str) -> bool:
+    """True if a WITH clause enclosing ``table`` defines ``name``."""
+    node = table.parent
+    while node is not None:
+        with_ = node.args.get("with_") or node.args.get("with")
+        if isinstance(with_, exp.With) and any(
+            cte.alias.upper() == name.upper() for cte in with_.expressions
+        ):
+            return True
+        node = node.parent
+    return False
 
 
 def referenced_objects(
     root: exp.Expression,
-) -> tuple[list[tuple[str | None, str]], list[tuple[bool, str]]]:
+) -> tuple[list[tuple[str | None, str]], list[tuple[str, ...]]]:
     """Tables and functions a statement references.
 
-    Returns ``(tables, functions)``: tables as ``(owner_or_None, name)`` with CTE
-    names left out; functions sqlglot does not model (possible schema objects) as
-    ``(qualified, name)``, where a qualified call reports its first name part
-    (``dbms_xplan.display_cursor`` → ``(True, "DBMS_XPLAN")``).
+    Returns ``(tables, functions)``: tables as ``(owner_or_None, name)``, leaving
+    out names that refer to a CTE in scope; functions sqlglot does not model
+    (possible schema objects) as their full dotted path, e.g. ``("F",)`` or
+    ``("SYS", "DBMS_XPLAN", "DISPLAY_CURSOR")``. A call whose prefix is not a
+    plain dotted name is reported as ``("?", name)``.
 
     Raises:
-        SqlGuardError: for database-link references, which cannot be checked.
+        SqlGuardError: for database-link references and table sources other than
+            a named object or ``TABLE(fn(...))``, which cannot be checked.
     """
-    ctes = {cte.alias.upper() for cte in root.find_all(exp.CTE) if cte.alias}
     tables: list[tuple[str | None, str]] = []
     for table in root.find_all(exp.Table):
-        name = _ident(table.this) if isinstance(table.this, exp.Identifier) else None
-        if name is None:  # TABLE(fn(...)) — the function is checked below
+        if isinstance(table.this, exp.Anonymous):  # TABLE(fn(...)) — fn checked below
             continue
+        if not isinstance(table.this, exp.Identifier):
+            raise SqlGuardError(_DENIED.format(what=f"the row source {table.this.key.upper()}"))
+        name = _ident(table.this)
         if "@" in name or table.args.get("catalog"):
             raise SqlGuardError("Queries over a database link are not allowed.")
         owner = _ident(table.args.get("db"))
-        if owner is None and name.upper() in ctes:
+        if owner is None and _cte_in_scope(table, name):
             continue
         if (owner, name) not in tables:
             tables.append((owner, name))
 
-    functions: list[tuple[bool, str]] = []
+    functions: list[tuple[str, ...]] = []
     for func in root.find_all(exp.Anonymous):
+        name = func.name.upper()
         parent = func.parent
         if isinstance(parent, exp.Dot) and parent.expression is func:
-            first = _leftmost_name(parent.this)
-            ref = (True, first) if first else None
+            prefix = _dotted_path(parent.this)
+            path = (*prefix, name) if prefix is not None else ("?", name)
         else:
-            ref = (False, func.name.upper())
-        if ref and ref not in functions:
-            functions.append(ref)
+            path = (name,)
+        if path not in functions:
+            functions.append(path)
     return tables, functions
 
 
@@ -95,7 +127,9 @@ def check_access(root: exp.Expression, resolve: Resolver, is_internal: IsInterna
     """Raise :class:`SqlGuardError` unless every referenced object is Oracle-maintained.
 
     Tables that cannot be resolved are refused (fail closed). An unqualified
-    function that resolves to no schema object is a SQL built-in and is allowed.
+    function that resolves to no schema object is a SQL built-in and is allowed;
+    one that resolves to a schema object is refused. Qualified calls are allowed
+    only into :data:`ALLOWED_PACKAGES`, and only when the package is Oracle's.
     """
     tables, functions = referenced_objects(root)
 
@@ -107,15 +141,16 @@ def check_access(root: exp.Expression, resolve: Resolver, is_internal: IsInterna
         if not is_internal(target[0]):
             raise SqlGuardError(_DENIED.format(what=f"{shown}, which belongs to schema {target[0]}"))
 
-    for qualified, name in functions:
-        target = resolve(None, name)
-        if target is not None:
-            owner = target[0]
-        elif qualified:
-            owner = name  # schema.function() or schema.package.function()
-        else:
-            continue  # built-in SQL function
-        if not is_internal(owner):
-            raise SqlGuardError(
-                _DENIED.format(what=f"calling {name}, which belongs to schema {owner}")
-            )
+    for path in functions:
+        shown = ".".join(path)
+        if len(path) == 1:
+            if path[0] in _DENIED_BUILTINS or resolve(None, path[0]) is not None:
+                raise SqlGuardError(_DENIED.format(what=f"calling {shown}()"))
+            continue
+        if len(path) in (2, 3) and path[-2] in ALLOWED_PACKAGES:
+            target = resolve(path[0] if len(path) == 3 else None, path[-2])
+            if target is not None and is_internal(target[0]):
+                continue
+        raise SqlGuardError(
+            _DENIED.format(what=f"calling {shown}() (only {', '.join(sorted(ALLOWED_PACKAGES))} may be used)")
+        )

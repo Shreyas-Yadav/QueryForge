@@ -17,6 +17,9 @@ OBJECTS = {
     ("PUBLIC", "V$SQLAREA"): ("SYS", "V_$SQLAREA"),
     ("PUBLIC", "DUAL"): ("SYS", "DUAL"),
     ("PUBLIC", "DBMS_XPLAN"): ("SYS", "DBMS_XPLAN"),
+    ("PUBLIC", "DBMS_XMLGEN"): ("SYS", "DBMS_XMLGEN"),
+    ("SYS", "DBMS_XPLAN"): ("SYS", "DBMS_XPLAN"),
+    ("SYS", "DBMS_XMLGEN"): ("SYS", "DBMS_XMLGEN"),
     ("PUBLIC", "DBA_USERS"): ("SYS", "DBA_USERS"),
     ("PUBLIC", "EMP_PUB"): ("SHREYAS", "EMPLOYEE"),  # public synonym onto a user table
     ("SYS", "V_$SQLAREA"): ("SYS", "V_$SQLAREA"),
@@ -52,9 +55,20 @@ def test_scalar_subquery_tables_are_found():
     assert (None, "EMPLOYEE") in tables
 
 
-def test_qualified_function_reports_its_first_name_part():
-    _, funcs = referenced_objects(validate_select("SELECT * FROM TABLE(dbms_xplan.display_cursor('x'))"))
-    assert (True, "DBMS_XPLAN") in funcs
+def test_function_calls_report_their_full_dotted_path():
+    _, funcs = referenced_objects(
+        validate_select("SELECT sys.dbms_xplan.display_cursor('x'), nvl(1, 2), f(1) FROM dual")
+    )
+    assert ("SYS", "DBMS_XPLAN", "DISPLAY_CURSOR") in funcs
+    assert ("F",) in funcs
+
+
+def test_cte_name_only_shadows_inside_its_own_query():
+    tables, _ = referenced_objects(validate_select(
+        "SELECT * FROM employee WHERE EXISTS "
+        "(WITH employee AS (SELECT 1 x FROM dual) SELECT 1 FROM employee)"
+    ))
+    assert (None, "EMPLOYEE") in tables
 
 
 def test_db_link_is_rejected():
@@ -76,6 +90,17 @@ def test_db_link_is_rejected():
         "SELECT f(1) FROM dual",
         "SELECT * FROM TABLE(shreyas.pipe())",
         "SELECT * FROM no_such_table",  # unresolvable → fail closed
+        # a CTE in a subquery must not hide the outer user table
+        (
+            "SELECT * FROM employee WHERE EXISTS "
+            "(WITH employee AS (SELECT 1 x FROM dual) SELECT 1 FROM employee)"
+        ),
+        "SELECT 1 FROM employee UNION ALL (WITH employee AS (SELECT 1 x FROM dual) SELECT x FROM employee)",
+        # Oracle packages that run SQL handed to them as text
+        "SELECT DBMS_XMLGEN.GETXML('SELECT * FROM employee') FROM dual",
+        "SELECT sys.dbms_xmlgen.getxml('SELECT * FROM employee') FROM dual",
+        "SELECT * FROM XMLTABLE('x' COLUMNS a NUMBER PATH 'a')",
+        "SELECT dbms_xplan.display_cursor('x') FROM dual WHERE f(1) = 1",
     ],
 )
 def test_user_objects_are_rejected(sql):
