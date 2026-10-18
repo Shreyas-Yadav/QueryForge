@@ -1,13 +1,21 @@
 # QueryForge
 
-Ask questions in plain English; QueryForge uses an LLM (**Gemini** or **Claude**,
-switchable) to write **Oracle SQL**, runs it **read-only** against your Oracle
-database and shows the result in a small web UI.
+An Oracle **performance-analysis** assistant. Ask questions in plain English
+(*"top 10 SQL by elapsed time"*, *"top wait events in the last hour"*);
+QueryForge uses an LLM (**Gemini** or **Claude**, switchable) to write **Oracle
+SQL** over Oracle's data dictionary and performance views (`V$`, ASH, AWR), runs it
+**read-only**, and shows the result in a web UI built like a monitoring console.
+
+QueryForge reads **only Oracle-maintained objects**. Application tables (anything
+in a user-created schema) are refused, and so are requests to list schemas or
+users. See [How it works](#how-it-works).
+
+New machine? **[SETUP.md](SETUP.md)** is a step-by-step guide (Windows included).
 
 Set the model provider in `.env`:
 
 ```
-PROVIDER=gemini    # default; GEMINI_MODEL=gemini-2.5-flash
+PROVIDER=gemini    # default; GEMINI_MODEL=gemini-3.1-flash-lite
 # PROVIDER=claude  # uses MODEL=claude-sonnet-4-6 — runs on Vertex (needs Claude quota)
 ```
 
@@ -37,7 +45,8 @@ For running on a machine with **no GCP project** (e.g. a teammate cloning the re
    `GEMINI_API_KEY=<your free key from aistudio.google.com/apikey>`. Leave
    `GCP_PROJECT_ID` blank.
 3. **Database:** `cp databases.example.json databases.json` and edit it for your
-   database (see [Connecting](#connecting)).
+   database (see [Connecting](#connecting)). The Oracle user you log in with needs
+   `SELECT_CATALOG_ROLE` (see [Prerequisites](#prerequisites-one-time)).
 4. **Run:** `uv run uvicorn queryforge.web.app:app` → open http://127.0.0.1:8000 and log in.
 
 > **Windows:** no extra native setup — `oracledb` runs in thin mode (pure Python,
@@ -45,18 +54,37 @@ For running on a machine with **no GCP project** (e.g. a teammate cloning the re
 
 ## How it works
 
-A Claude tool-use agent is given three read-only tools — `list_tables`,
-`describe_table`, and `run_query`. It inspects the schema as needed, writes a SELECT,
-runs it, and self-corrects if the query errors. Progress streams to the browser over SSE.
-`list_tables` surfaces both base tables and synonyms (private plus business PUBLIC
-synonyms — Oracle's system synonyms are filtered out), and `describe_table` follows a
-synonym to its underlying table or view.
+A tool-use agent (Gemini or Claude) is given three read-only tools:
+
+- `list_tables` — a catalog of the key performance views (`V$SQLAREA`, `V$SESSION`,
+  `V$ACTIVE_SESSION_HISTORY`, `DBA_HIST_*`, `DBMS_XPLAN`, …). No application tables.
+- `describe_table` — columns of one dictionary or performance view; follows synonyms
+  (`V$SQLAREA` → `SYS.V_$SQLAREA`).
+- `run_query` — runs one SELECT.
+
+It writes Oracle SQL, runs it, and self-corrects if the query errors. Progress streams
+to the browser over SSE.
+
+**Only Oracle-maintained objects.** Before a query runs (and before a view is
+described), every table, view and function it references is resolved the way
+Oracle would — explicit owner, else current schema, else PUBLIC synonym, following
+synonym chains — and allowed only if the final owner is an Oracle-maintained schema
+(`ALL_USERS.ORACLE_MAINTAINED = 'Y'`, e.g. `SYS`). Deciding by owner rather than by
+name means a user table called `DBA_FAKE`, or a PUBLIC synonym onto an application
+table, is still refused. Package calls are limited to `DBMS_XPLAN` (some Oracle
+packages, like `DBMS_XMLGEN`, run SQL text passed to them). Requests to list
+schemas or users are refused by the system prompt.
 
 **Safety is layered:**
-1. A **read-only Oracle user** (`GRANT SELECT` only) is the real boundary.
+1. The **Oracle user** is the real boundary. Use one that owns no tables and holds
+   only `CREATE SESSION` + `SELECT_CATALOG_ROLE` (see [Prerequisites](#prerequisites-one-time)).
 2. A **SQL guard** (`sqlglot`, Oracle dialect) rejects anything that isn't a single
    read-only SELECT — DDL, DML, PL/SQL, multi-statement payloads, `SELECT ... INTO`.
-3. A **row cap** and a **per-query timeout** bound runaway queries.
+3. The **object policy** above rejects anything that isn't Oracle-maintained.
+4. A **row cap** and a **per-query timeout** bound runaway queries.
+
+Layers 2–3 are application checks: an Oracle user that owns tables can still read
+them from any other client, which is why layer 1 matters.
 
 The model only ever sees a small *preview* of query results; the full (capped) result set
 goes to the UI separately, so a broad query can't blow up context or cost.
@@ -67,18 +95,19 @@ goes to the UI separately, so a broad query can't blow up context or cost.
 src/queryforge/
   config.py        # env/.env settings (pydantic-settings)
   connections.py   # databases.json loader (login-screen choices)
-  session.py       # the active login: pool + schema cache, swapped together
+  session.py       # the active login (connection pool), swapped under a lock
   observability.py # OpenTelemetry tracing → Arize Phoenix
   db.py            # python-oracledb thin-mode pool + read-only query helpers
   sql_guard.py     # read-only SQL validation + row cap
-  prompt.py        # system prompt + schema overview + perf-view (AWR/ASH) catalog
+  object_policy.py # Oracle-maintained-objects-only check (tables + functions)
+  prompt.py        # system prompt: scope rules + perf-view (AWR/ASH) catalog
   agent_core.py    # provider-neutral tool specs + tool execution
   agent.py         # Claude-on-Vertex tool-use loop (event generator)
   agent_gemini.py  # Gemini tool-use loop — same events, google-genai SDK
   runner.py        # picks the provider (PROVIDER env var) and dispatches
   web/app.py       # FastAPI: /login, /logout, /session, /databases, POST /query (SSE), /health
   web/static/index.html
-tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web smoke tests
+tests/             # sql_guard, object_policy, agents (mocked), db helpers, web + UI (Node) tests
 ```
 
 ## Prerequisites (one-time)
@@ -93,21 +122,18 @@ tests/             # sql_guard, agent + agent_gemini (mocked), db helpers, web s
    ```
    gcloud auth application-default login
    ```
-3. **Read-only DB user** — this is the actual security boundary. Run as **ADMIN**
-   (a schema-owner account usually can't `CREATE USER`). Grant `SELECT` only on the
-   tables the agent may read; never grant write/DDL:
+3. **Read-only DB user** — this is the actual security boundary. Run as an admin
+   in the pluggable database. The user should own no tables and get only the
+   dictionary / performance views; never grant write/DDL or `SELECT ANY TABLE`:
    ```sql
    CREATE USER qf_readonly IDENTIFIED BY "a-strong-password";
    GRANT CREATE SESSION TO qf_readonly;
-   -- grant SELECT only on each table/view the agent may read, e.g. (owner = SHREYAS):
-   GRANT SELECT ON SHREYAS.EMPLOYEE TO qf_readonly;
-   -- (or build a read-only role and grant it)
+   GRANT SELECT_CATALOG_ROLE TO qf_readonly;   -- V$ / DBA_ / DBA_HIST_ views
    ```
-   Then add `qf_readonly` to that database's `users` in `databases.json` and set
-   `"schema": "SHREYAS"` so the agent reads the owner's schema. The app sets
-   `CURRENT_SCHEMA`, so questions still use unqualified table names.
-   The same DDL applies to a local database — run it there too rather than
-   pointing the agent at `SYSTEM`.
+   Then add `qf_readonly` to that database's `users` in `databases.json`. Without
+   `SELECT_CATALOG_ROLE`, performance questions fail with *ORA-00942*.
+   AWR history (`DBA_HIST_*`) needs Enterprise Edition with the Diagnostics Pack
+   license; on XE / Free those views are empty or missing, while `V$` and ASH work.
 
 ## Local Oracle
 
@@ -128,11 +154,13 @@ docker run -d --name oracle-free -p 1521:1521 -e ORACLE_PASSWORD=oracle \
 docker logs -f oracle-free      # wait for "DATABASE IS READY TO USE!"
 ```
 
-Then add it to `databases.json` and log in as `system` with password `oracle`:
+Then add it to `databases.json`. You can log in as `system` (password `oracle`)
+to try it, but create `qf_readonly` as in [Prerequisites](#prerequisites-one-time)
+for regular use:
 
 ```json
 [{ "name": "Oracle Free (Docker)", "host": "localhost", "port": 1521,
-   "service_name": "FREEPDB1", "users": ["system"] }]
+   "service_name": "FREEPDB1", "users": ["system", "qf_readonly"] }]
 ```
 
 **Windows — native install:** run the Oracle Database 23ai Free installer (or XE
@@ -170,7 +198,7 @@ cp databases.example.json databases.json   # the databases on the login screen
 | `host` | yes | Listener host, e.g. `localhost` |
 | `port` | no | Listener port (default `1521`) |
 | `service_name` | yes | Oracle service, e.g. `AIWORLD` or `FREEPDB1` |
-| `schema` | no | Schema the agent reads (default: the logged-in user) |
+| `schema` | no | Session `CURRENT_SCHEMA` (default: the logged-in user). Objects in it are still refused unless Oracle-maintained |
 | `users` | yes | Oracle users offered for this database |
 
 A connect string such as
@@ -227,11 +255,17 @@ any time at http://127.0.0.1:8000/health.
 uv run pytest
 ```
 
-The agent and web tests mock Vertex/Oracle and run offline. The live `test_db` checks
-run only when `QF_LIVE_DATABASE` (an entry name in `databases.json`), `QF_LIVE_USER`
-and `QF_LIVE_PASSWORD` are set.
+The agent and web tests mock Vertex/Oracle and run offline; the UI tests need
+`node` on the PATH. The live `test_db` checks (describe `V$SQLAREA`, refuse an
+application table) run only when `QF_LIVE_DATABASE` (an entry name in
+`databases.json`), `QF_LIVE_USER` and `QF_LIVE_PASSWORD` are set:
+
+```
+QF_LIVE_DATABASE="AIWORLD (local)" QF_LIVE_USER=shreyas QF_LIVE_PASSWORD=... uv run pytest tests/test_db.py -k live
+```
 
 ## Out of scope (v1)
 
-App-level auth / multi-user, write/DML support, cross-schema querying, and deployment —
-this runs locally for a single user.
+App-level auth / multi-user, write/DML support, querying application data, and
+deployment — this runs locally for a single user. Saved queries live in the
+browser (`localStorage`); server-side storage is future work.
